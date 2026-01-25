@@ -136,7 +136,9 @@ celerybeat.pid
 
 # Environments
 .env
-trigger.conf
+
+# Trigger database (created on Pi-hole)
+trigger.db
 .envrc
 .venv
 env/

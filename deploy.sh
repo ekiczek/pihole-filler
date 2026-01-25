@@ -34,11 +34,8 @@ SSH_KEY="${PIHOLE_SSH_KEY:-$HOME/.ssh/id_rsa}"
 REMOTE_HOST="${PIHOLE_USER}@${PIHOLE_HOST}"
 SSH_OPTS="-i $SSH_KEY"
 SCRIPT_NAME="pihole_elapsed_time_trigger.py"
-CONFIG_NAME="trigger.conf"
 REMOTE_PATH="~/${SCRIPT_NAME}"
-REMOTE_CONFIG="~/${CONFIG_NAME}"
 LOCAL_SCRIPT="${SCRIPT_DIR}/${SCRIPT_NAME}"
-LOCAL_CONFIG="${SCRIPT_DIR}/${CONFIG_NAME}"
 
 # Colors for output
 RED='\033[0;31m'
@@ -58,32 +55,30 @@ log_error() {
     echo -e "${RED}[ERROR]${NC} $1"
 }
 
-# Check if local files exist
+# Check if local script exists
 if [[ ! -f "$LOCAL_SCRIPT" ]]; then
     log_error "Script not found: $LOCAL_SCRIPT"
     exit 1
 fi
 
-if [[ ! -f "$LOCAL_CONFIG" ]]; then
-    log_error "Config not found: $LOCAL_CONFIG"
-    echo "Copy trigger.conf.example to trigger.conf and configure your settings."
-    exit 1
-fi
-
-# Parse arguments
+# Build properly quoted arguments for remote shell
 SCRIPT_ARGS=""
-if [[ "$1" == "--unblock" ]]; then
-    SCRIPT_ARGS="--unblock"
-    log_info "Will run with --unblock flag"
+for arg in "$@"; do
+    # Escape single quotes and wrap in single quotes for remote shell
+    escaped_arg=$(printf '%s' "$arg" | sed "s/'/'\\\\''/g")
+    SCRIPT_ARGS="$SCRIPT_ARGS '$escaped_arg'"
+done
+
+if [[ -n "$SCRIPT_ARGS" ]]; then
+    log_info "Will run with args:$SCRIPT_ARGS"
 fi
 
-# Step 1: Copy script and config to remote host
-log_info "Copying ${SCRIPT_NAME} and ${CONFIG_NAME} to ${REMOTE_HOST}..."
-if scp $SSH_OPTS "$LOCAL_SCRIPT" "${REMOTE_HOST}:${REMOTE_PATH}" && \
-   scp $SSH_OPTS "$LOCAL_CONFIG" "${REMOTE_HOST}:${REMOTE_CONFIG}"; then
+# Step 1: Copy script to remote host
+log_info "Copying ${SCRIPT_NAME} to ${REMOTE_HOST}..."
+if scp $SSH_OPTS "$LOCAL_SCRIPT" "${REMOTE_HOST}:${REMOTE_PATH}"; then
     log_info "Copy successful"
 else
-    log_error "Failed to copy files to remote host"
+    log_error "Failed to copy script to remote host"
     exit 1
 fi
 
