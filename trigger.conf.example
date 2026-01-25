@@ -1,0 +1,20 @@
+# Pi-hole Elapsed Time Trigger Configuration
+# Copy this file to trigger.conf and customize your settings
+
+# Group ID to monitor (find this in Pi-hole Admin > Groups)
+GROUP_ID=2
+
+# Time limit in seconds before blocking (e.g., 3600 = 1 hour)
+TIME_LIMIT_SECONDS=60
+
+# Comment to identify the auto-generated block rule
+BLOCK_COMMENT=Time limit block - auto-generated
+
+# Domain list type (3 = regex denylist, don't change unless you know what you're doing)
+DOMAINLIST_TYPE_REGEX_DENY=3
+
+# Domains to watch for (comma-separated, matched as substrings)
+TRIGGER_DOMAINS=youtube,youtu.be,googlevideo.com,ytimg.com,yt3.ggpht.com
+
+# Regex pattern to block (type 3 = regex denylist)
+BLOCK_REGEX=youtube|(^|\.)youtu\.be$|(^|\.)googlevideo\.com$|(^|\.)ytimg\.com$|(^|\.)yt3\.ggpht\.com$
