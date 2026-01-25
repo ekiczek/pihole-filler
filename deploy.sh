@@ -1,16 +1,23 @@
 #!/bin/bash
 #
-# Deploy and run the Pi-hole Elapsed Time Trigger
+# Deploy and manage the Pi-hole Elapsed Time Trigger daemon
 #
 # Usage:
-#   ./deploy.sh           Deploy and run the script
-#   ./deploy.sh --unblock Deploy and run with --unblock flag
+#   ./deploy.sh                Deploy script and restart daemon
+#   ./deploy.sh --status       Check daemon status
+#   ./deploy.sh --logs         View daemon logs (live)
+#   ./deploy.sh --stop         Stop the daemon
+#   ./deploy.sh --start        Start the daemon
+#   ./deploy.sh --list         List configured triggers
+#   ./deploy.sh --add ...      Add a new trigger
+#   ./deploy.sh --remove ID    Remove a trigger
+#   ./deploy.sh --unblock      Remove all active blocks
 #
 
 set -e
 
 # Load configuration from .env file
-SCRIPT_DIR="$(dirname "$0")"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ENV_FILE="${SCRIPT_DIR}/.env"
 
 if [[ ! -f "$ENV_FILE" ]]; then
@@ -34,13 +41,18 @@ SSH_KEY="${PIHOLE_SSH_KEY:-$HOME/.ssh/id_rsa}"
 REMOTE_HOST="${PIHOLE_USER}@${PIHOLE_HOST}"
 SSH_OPTS="-i $SSH_KEY"
 SCRIPT_NAME="pihole_elapsed_time_trigger.py"
-REMOTE_PATH="~/${SCRIPT_NAME}"
+SERVICE_NAME="pihole-trigger"
+SERVICE_FILE="${SERVICE_NAME}.service"
+REMOTE_SCRIPT_PATH="/home/pi/${SCRIPT_NAME}"
+REMOTE_SERVICE_PATH="/etc/systemd/system/${SERVICE_FILE}"
 LOCAL_SCRIPT="${SCRIPT_DIR}/${SCRIPT_NAME}"
+LOCAL_SERVICE="${SCRIPT_DIR}/${SERVICE_FILE}"
 
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 log_info() {
@@ -55,57 +67,182 @@ log_error() {
     echo -e "${RED}[ERROR]${NC} $1"
 }
 
-# Check if local script exists
-if [[ ! -f "$LOCAL_SCRIPT" ]]; then
-    log_error "Script not found: $LOCAL_SCRIPT"
-    exit 1
-fi
+log_cmd() {
+    echo -e "${BLUE}[CMD]${NC} $1"
+}
 
-# Build properly quoted arguments for remote shell
-SCRIPT_ARGS=""
-for arg in "$@"; do
-    # Escape single quotes and wrap in single quotes for remote shell
-    escaped_arg=$(printf '%s' "$arg" | sed "s/'/'\\\\''/g")
-    SCRIPT_ARGS="$SCRIPT_ARGS '$escaped_arg'"
-done
+# Run a command on the remote host
+remote_cmd() {
+    ssh $SSH_OPTS "$REMOTE_HOST" "$@"
+}
 
-if [[ -n "$SCRIPT_ARGS" ]]; then
-    log_info "Will run with args:$SCRIPT_ARGS"
-fi
+# Run a command on the remote host with sudo
+remote_sudo() {
+    ssh $SSH_OPTS "$REMOTE_HOST" "sudo $*"
+}
 
-# Step 1: Copy script to remote host
-log_info "Copying ${SCRIPT_NAME} to ${REMOTE_HOST}..."
-if scp $SSH_OPTS "$LOCAL_SCRIPT" "${REMOTE_HOST}:${REMOTE_PATH}"; then
-    log_info "Copy successful"
-else
-    log_error "Failed to copy script to remote host"
-    exit 1
-fi
+# Check if local files exist
+check_local_files() {
+    if [[ ! -f "$LOCAL_SCRIPT" ]]; then
+        log_error "Script not found: $LOCAL_SCRIPT"
+        exit 1
+    fi
+    if [[ ! -f "$LOCAL_SERVICE" ]]; then
+        log_error "Service file not found: $LOCAL_SERVICE"
+        exit 1
+    fi
+}
 
-# Step 2: SSH in and run the script with sudo
-log_info "Connecting to ${REMOTE_HOST} and running script..."
-log_info "Logs will be saved to ~/limiter.log on the remote host"
-echo "--------------------------------------------------------------"
+# Deploy the script and service file to the remote host
+deploy_files() {
+    check_local_files
 
-# Use ssh with pseudo-terminal allocation for interactive output
-# The script requires sudo, so we run it with sudo
-# Use tee to log to both terminal and file for later troubleshooting
-# -u flag forces unbuffered output so logs appear immediately
-ssh $SSH_OPTS -t "$REMOTE_HOST" "sudo python3 -u ${REMOTE_PATH} ${SCRIPT_ARGS} 2>&1 | tee ~/limiter.log"
+    log_info "Deploying files to ${REMOTE_HOST}..."
 
-EXIT_CODE=$?
+    # Copy the Python script
+    log_info "Copying ${SCRIPT_NAME}..."
+    scp $SSH_OPTS "$LOCAL_SCRIPT" "${REMOTE_HOST}:${REMOTE_SCRIPT_PATH}"
 
-echo "--------------------------------------------------------------"
-if [[ $EXIT_CODE -eq 0 ]]; then
-    log_info "Script exited normally"
-elif [[ $EXIT_CODE -eq 130 ]]; then
-    log_warn "Script interrupted (Ctrl+C)"
-else
-    log_error "Script exited with code: $EXIT_CODE"
-fi
+    # Copy the service file to a temp location, then move with sudo
+    log_info "Installing systemd service..."
+    scp $SSH_OPTS "$LOCAL_SERVICE" "${REMOTE_HOST}:/tmp/${SERVICE_FILE}"
+    remote_sudo "mv /tmp/${SERVICE_FILE} ${REMOTE_SERVICE_PATH}"
+    remote_sudo "chmod 644 ${REMOTE_SERVICE_PATH}"
 
-echo ""
-log_info "To share logs with Claude for troubleshooting, run:"
-echo "  scp ${REMOTE_HOST}:~/limiter.log /tmp/ && cat /tmp/limiter.log"
+    # Reload systemd
+    log_info "Reloading systemd..."
+    remote_sudo "systemctl daemon-reload"
 
-exit $EXIT_CODE
+    # Enable the service to start on boot
+    log_info "Enabling service to start on boot..."
+    remote_sudo "systemctl enable ${SERVICE_NAME}"
+
+    log_info "Deployment complete!"
+}
+
+# Restart the daemon
+restart_daemon() {
+    log_info "Restarting ${SERVICE_NAME} daemon..."
+    remote_sudo "systemctl restart ${SERVICE_NAME}"
+    sleep 2
+    show_status
+}
+
+# Start the daemon
+start_daemon() {
+    log_info "Starting ${SERVICE_NAME} daemon..."
+    remote_sudo "systemctl start ${SERVICE_NAME}"
+    sleep 2
+    show_status
+}
+
+# Stop the daemon
+stop_daemon() {
+    log_info "Stopping ${SERVICE_NAME} daemon..."
+    remote_sudo "systemctl stop ${SERVICE_NAME}"
+    log_info "Daemon stopped"
+}
+
+# Show daemon status
+show_status() {
+    echo ""
+    log_info "Daemon status:"
+    echo "--------------------------------------------------------------"
+    remote_sudo "systemctl status ${SERVICE_NAME} --no-pager" || true
+    echo "--------------------------------------------------------------"
+}
+
+# Show daemon logs
+show_logs() {
+    log_info "Showing logs for ${SERVICE_NAME} (Ctrl+C to exit)..."
+    echo "--------------------------------------------------------------"
+    remote_sudo "journalctl -u ${SERVICE_NAME} -f"
+}
+
+# Run a management command (--list, --add, --remove, etc.)
+run_management_cmd() {
+    check_local_files
+
+    # Build properly quoted arguments for remote shell
+    local SCRIPT_ARGS=""
+    for arg in "$@"; do
+        escaped_arg=$(printf '%s' "$arg" | sed "s/'/'\\\\''/g")
+        SCRIPT_ARGS="$SCRIPT_ARGS '$escaped_arg'"
+    done
+
+    log_info "Running management command..."
+
+    # Copy latest script first
+    scp $SSH_OPTS "$LOCAL_SCRIPT" "${REMOTE_HOST}:${REMOTE_SCRIPT_PATH}" >/dev/null
+
+    # Run the command
+    echo "--------------------------------------------------------------"
+    ssh $SSH_OPTS "$REMOTE_HOST" "sudo python3 ${REMOTE_SCRIPT_PATH} ${SCRIPT_ARGS}"
+    local EXIT_CODE=$?
+    echo "--------------------------------------------------------------"
+
+    return $EXIT_CODE
+}
+
+# Print usage
+print_usage() {
+    echo "Pi-hole Elapsed Time Trigger - Deployment Script"
+    echo ""
+    echo "Usage:"
+    echo "  ./deploy.sh                Deploy script and restart daemon"
+    echo "  ./deploy.sh --status       Check daemon status"
+    echo "  ./deploy.sh --logs         View daemon logs (live)"
+    echo "  ./deploy.sh --stop         Stop the daemon"
+    echo "  ./deploy.sh --start        Start the daemon (without redeploying)"
+    echo ""
+    echo "Trigger Management:"
+    echo "  ./deploy.sh --list         List configured triggers"
+    echo "  ./deploy.sh --add NAME GROUP_IDS TIME_LIMIT DOMAINS REGEX"
+    echo "                             Add a new trigger"
+    echo "  ./deploy.sh --remove ID    Remove a trigger"
+    echo "  ./deploy.sh --enable ID    Enable a trigger"
+    echo "  ./deploy.sh --disable ID   Disable a trigger"
+    echo "  ./deploy.sh --unblock      Remove all active blocks"
+    echo ""
+    echo "Examples:"
+    echo "  ./deploy.sh --add 'YouTube Limit' '2,3' 3600 'youtube,googlevideo.com' 'youtube|googlevideo\\.com'"
+}
+
+# Main logic
+case "${1:-}" in
+    --help|-h)
+        print_usage
+        exit 0
+        ;;
+    --status)
+        show_status
+        exit 0
+        ;;
+    --logs)
+        show_logs
+        exit 0
+        ;;
+    --stop)
+        stop_daemon
+        exit 0
+        ;;
+    --start)
+        start_daemon
+        exit 0
+        ;;
+    --list|--add|--remove|--enable|--disable|--unblock)
+        run_management_cmd "$@"
+        exit $?
+        ;;
+    "")
+        # Default: deploy and restart
+        deploy_files
+        restart_daemon
+        exit 0
+        ;;
+    *)
+        log_error "Unknown option: $1"
+        print_usage
+        exit 1
+        ;;
+esac

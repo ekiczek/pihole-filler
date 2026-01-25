@@ -1,0 +1,21 @@
+[Unit]
+Description=Pi-hole Elapsed Time Trigger
+Documentation=https://github.com/your-repo/pihole-filler
+After=pihole-FTL.service
+Wants=pihole-FTL.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 -u /home/pi/pihole_elapsed_time_trigger.py
+WorkingDirectory=/home/pi
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+# Run as root (required for Pi-hole database access)
+User=root
+Group=root
+
+[Install]
+WantedBy=multi-user.target
