@@ -77,11 +77,12 @@ def run_sqlite(query, db_path=GRAVITY_DB):
 
 def init_trigger_db():
     """Initialize the trigger configuration database if it doesn't exist."""
+    # Create table with group_ids (comma-separated) instead of single group_id
     create_table = """
         CREATE TABLE IF NOT EXISTS triggers (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT NOT NULL,
-            group_id INTEGER NOT NULL,
+            group_ids TEXT NOT NULL,
             time_limit_seconds INTEGER NOT NULL,
             trigger_domains TEXT NOT NULL,
             block_regex TEXT NOT NULL,
@@ -93,11 +94,43 @@ def init_trigger_db():
     if not success:
         print(f"[DB] Failed to initialize trigger database: {output}")
         return False
+
+    # Migration: rename group_id to group_ids if old schema exists
+    # Check if old column exists
+    check_col = "SELECT sql FROM sqlite_master WHERE type='table' AND name='triggers'"
+    success, schema = run_sqlite(check_col, db_path=TRIGGER_DB)
+    if success and 'group_id INTEGER' in schema:
+        print("[DB] Migrating database: group_id -> group_ids...")
+        # SQLite doesn't support RENAME COLUMN in older versions, so we recreate
+        migrate_queries = [
+            "ALTER TABLE triggers RENAME TO triggers_old",
+            """CREATE TABLE triggers (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                group_ids TEXT NOT NULL,
+                time_limit_seconds INTEGER NOT NULL,
+                trigger_domains TEXT NOT NULL,
+                block_regex TEXT NOT NULL,
+                enabled INTEGER DEFAULT 1,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )""",
+            """INSERT INTO triggers (id, name, group_ids, time_limit_seconds, trigger_domains, block_regex, enabled, created_at)
+               SELECT id, name, CAST(group_id AS TEXT), time_limit_seconds, trigger_domains, block_regex, enabled, created_at
+               FROM triggers_old""",
+            "DROP TABLE triggers_old"
+        ]
+        for query in migrate_queries:
+            success, output = run_sqlite(query, db_path=TRIGGER_DB)
+            if not success:
+                print(f"[DB] Migration failed: {output}")
+                return False
+        print("[DB] Migration complete")
+
     return True
 
 def load_triggers():
     """Load all enabled triggers from the database."""
-    query = "SELECT id, name, group_id, time_limit_seconds, trigger_domains, block_regex FROM triggers WHERE enabled = 1"
+    query = "SELECT id, name, group_ids, time_limit_seconds, trigger_domains, block_regex FROM triggers WHERE enabled = 1"
     success, output = run_sqlite(query, db_path=TRIGGER_DB)
 
     if not success:
@@ -116,7 +149,7 @@ def load_triggers():
             triggers.append({
                 'id': int(parts[0]),
                 'name': parts[1],
-                'group_id': int(parts[2]),
+                'group_ids': [int(g.strip()) for g in parts[2].split(',')],
                 'time_limit_seconds': int(parts[3]),
                 'trigger_domains': [d.strip() for d in parts[4].split(',')],
                 'block_regex': parts[5],
@@ -125,7 +158,7 @@ def load_triggers():
 
 def list_triggers():
     """List all triggers in the database."""
-    query = "SELECT id, name, group_id, time_limit_seconds, trigger_domains, enabled FROM triggers ORDER BY id"
+    query = "SELECT id, name, group_ids, time_limit_seconds, trigger_domains, enabled FROM triggers ORDER BY id"
     success, output = run_sqlite(query, db_path=TRIGGER_DB)
 
     if not success:
@@ -138,9 +171,9 @@ def list_triggers():
         return
 
     print("\nConfigured Triggers:")
-    print("=" * 80)
-    print(f"{'ID':<4} {'Name':<20} {'Group':<6} {'Time':<8} {'Domains':<30} {'Status':<8}")
-    print("-" * 80)
+    print("=" * 85)
+    print(f"{'ID':<4} {'Name':<20} {'Groups':<10} {'Time':<8} {'Domains':<30} {'Status':<8}")
+    print("-" * 85)
 
     for line in output.split('\n'):
         if not line.strip():
@@ -149,25 +182,28 @@ def list_triggers():
         if len(parts) >= 6:
             trigger_id = parts[0]
             name = parts[1][:18] + '..' if len(parts[1]) > 20 else parts[1]
-            group_id = parts[2]
+            group_ids = parts[2][:8] + '..' if len(parts[2]) > 10 else parts[2]
             time_limit = f"{parts[3]}s"
             domains = parts[4][:28] + '..' if len(parts[4]) > 30 else parts[4]
             status = "Enabled" if parts[5] == '1' else "Disabled"
-            print(f"{trigger_id:<4} {name:<20} {group_id:<6} {time_limit:<8} {domains:<30} {status:<8}")
+            print(f"{trigger_id:<4} {name:<20} {group_ids:<10} {time_limit:<8} {domains:<30} {status:<8}")
 
-    print("=" * 80)
+    print("=" * 85)
 
-def add_trigger_cli(name, group_id, time_limit, trigger_domains, block_regex):
+def add_trigger_cli(name, group_ids, time_limit, trigger_domains, block_regex):
     """Add a new trigger via command-line arguments."""
     # Validate inputs
     if not name:
         print("Error: Name is required")
         return False
 
+    # Validate group IDs (comma-separated)
     try:
-        group_id = int(group_id)
+        group_id_list = [int(g.strip()) for g in group_ids.split(',')]
+        if not group_id_list:
+            raise ValueError("Empty list")
     except ValueError:
-        print("Error: Group ID must be a number")
+        print("Error: Group IDs must be comma-separated numbers (e.g., '2' or '2,3,4')")
         return False
 
     try:
@@ -184,19 +220,23 @@ def add_trigger_cli(name, group_id, time_limit, trigger_domains, block_regex):
         print("Error: Block regex is required")
         return False
 
+    # Normalize group_ids (remove spaces, ensure consistent format)
+    group_ids_normalized = ','.join(str(g) for g in group_id_list)
+
     # Escape single quotes for SQL
     name_escaped = name.replace("'", "''")
     trigger_domains_escaped = trigger_domains.replace("'", "''")
     block_regex_escaped = block_regex.replace("'", "''")
 
     query = f"""
-        INSERT INTO triggers (name, group_id, time_limit_seconds, trigger_domains, block_regex)
-        VALUES ('{name_escaped}', {group_id}, {time_limit}, '{trigger_domains_escaped}', '{block_regex_escaped}')
+        INSERT INTO triggers (name, group_ids, time_limit_seconds, trigger_domains, block_regex)
+        VALUES ('{name_escaped}', '{group_ids_normalized}', {time_limit}, '{trigger_domains_escaped}', '{block_regex_escaped}')
     """
 
     success, output = run_sqlite(query, db_path=TRIGGER_DB)
     if success:
         print(f"Trigger '{name}' added successfully!")
+        print(f"  Groups: {group_ids_normalized}")
         return True
     else:
         print(f"Error: Failed to add trigger: {output}")
@@ -209,12 +249,12 @@ def add_trigger():
 
     try:
         name = input("Trigger name (e.g., 'YouTube Limit'): ").strip()
-        group_id = input("Pi-hole Group ID to monitor: ").strip()
+        group_ids = input("Pi-hole Group ID(s) to monitor (comma-separated, e.g., '2' or '2,3,4'): ").strip()
         time_limit = input("Time limit in seconds (e.g., 3600 for 1 hour): ").strip()
         trigger_domains = input("Trigger domains (comma-separated, e.g., 'youtube,googlevideo.com'): ").strip()
         block_regex = input("Block regex pattern: ").strip()
 
-        return add_trigger_cli(name, group_id, time_limit, trigger_domains, block_regex)
+        return add_trigger_cli(name, group_ids, time_limit, trigger_domains, block_regex)
 
     except (KeyboardInterrupt, EOFError):
         print("\nCancelled.")
@@ -280,7 +320,7 @@ def get_existing_block(trigger):
     return None
 
 def add_block(trigger):
-    """Add blocking regex to the database for a trigger's group."""
+    """Add blocking regex to the database for a trigger's groups."""
     comment = get_block_comment(trigger)
     print(f"[{trigger['name']}] Adding block rule...")
 
@@ -312,18 +352,19 @@ def add_block(trigger):
     else:
         print(f"[{trigger['name']}] Inserted rule (ID: {domain_id})")
 
-    # Remove from default group (0) and add to our target group
+    # Remove from default group (0) and add to all target groups
     delete_default = f"DELETE FROM domainlist_by_group WHERE domainlist_id = {domain_id} AND group_id = 0"
     run_sqlite(delete_default)
 
-    add_to_group = f"INSERT OR IGNORE INTO domainlist_by_group (domainlist_id, group_id) VALUES ({domain_id}, {trigger['group_id']})"
-    success, output = run_sqlite(add_to_group)
+    # Add to each group
+    for group_id in trigger['group_ids']:
+        add_to_group = f"INSERT OR IGNORE INTO domainlist_by_group (domainlist_id, group_id) VALUES ({domain_id}, {group_id})"
+        success, output = run_sqlite(add_to_group)
+        if not success:
+            print(f"[{trigger['name']}] Warning: Failed to assign to group {group_id}: {output}")
 
-    if not success:
-        print(f"[{trigger['name']}] Failed to assign to group: {output}")
-        return False
-
-    print(f"[{trigger['name']}] Assigned rule to group {trigger['group_id']}")
+    group_list = ','.join(str(g) for g in trigger['group_ids'])
+    print(f"[{trigger['name']}] Assigned rule to group(s) {group_list}")
     return True
 
 def enable_block(trigger, domain_id):
@@ -529,7 +570,8 @@ def handle_trigger_access(trigger, client_ip):
             if add_block(trigger):
                 state['is_blocked'] = True
                 reload_pihole()
-                print(f"[{trigger['name']}] Domains are now BLOCKED for group {trigger['group_id']}")
+                group_list = ','.join(str(g) for g in trigger['group_ids'])
+                print(f"[{trigger['name']}] Domains are now BLOCKED for group(s) {group_list}")
             else:
                 print(f"[{trigger['name']}] Failed to add block - will retry")
 
@@ -547,7 +589,8 @@ def check_timers_expired():
             if add_block(trigger):
                 state['is_blocked'] = True
                 reload_pihole()
-                print(f"[{trigger['name']}] Domains are now BLOCKED for group {trigger['group_id']}")
+                group_list = ','.join(str(g) for g in trigger['group_ids'])
+                print(f"[{trigger['name']}] Domains are now BLOCKED for group(s) {group_list}")
 
 def signal_handler(signum, frame):
     """Handle shutdown signals gracefully."""
@@ -587,9 +630,15 @@ def main():
 
     # Initialize state for each trigger
     for trigger in triggers:
-        target_ips = get_group_clients(trigger['group_id'])
+        # Gather clients from all groups
+        target_ips = set()
+        for group_id in trigger['group_ids']:
+            group_ips = get_group_clients(group_id)
+            target_ips.update(group_ips)
+
         if not target_ips:
-            print(f"Warning: No clients found in group {trigger['group_id']} for trigger '{trigger['name']}'")
+            group_list = ','.join(str(g) for g in trigger['group_ids'])
+            print(f"Warning: No clients found in group(s) {group_list} for trigger '{trigger['name']}'")
 
         trigger_states[trigger['id']] = {
             'first_access': None,
@@ -609,8 +658,9 @@ def main():
 
     for trigger in triggers:
         state = trigger_states[trigger['id']]
+        group_list = ','.join(str(g) for g in trigger['group_ids'])
         print(f"  [{trigger['id']}] {trigger['name']}")
-        print(f"      Group: {trigger['group_id']} ({len(state['target_ips'])} clients)")
+        print(f"      Groups: {group_list} ({len(state['target_ips'])} clients)")
         print(f"      Time limit: {trigger['time_limit_seconds']} seconds")
         print(f"      Watching: {', '.join(trigger['trigger_domains'][:3])}{'...' if len(trigger['trigger_domains']) > 3 else ''}")
         print()
@@ -664,7 +714,7 @@ def print_help():
     print("  sudo python3 pihole_elapsed_time_trigger.py              Run all enabled triggers")
     print("  sudo python3 pihole_elapsed_time_trigger.py --list       List all triggers")
     print("  sudo python3 pihole_elapsed_time_trigger.py --add        Add a new trigger (interactive)")
-    print("  sudo python3 pihole_elapsed_time_trigger.py --add NAME GROUP_ID TIME_LIMIT DOMAINS REGEX")
+    print("  sudo python3 pihole_elapsed_time_trigger.py --add NAME GROUP_IDS TIME_LIMIT DOMAINS REGEX")
     print("                                                           Add a trigger (non-interactive)")
     print("  sudo python3 pihole_elapsed_time_trigger.py --remove ID  Remove a trigger")
     print("  sudo python3 pihole_elapsed_time_trigger.py --enable ID  Enable a trigger")
@@ -672,8 +722,11 @@ def print_help():
     print("  sudo python3 pihole_elapsed_time_trigger.py --unblock    Remove all active blocks")
     print("  sudo python3 pihole_elapsed_time_trigger.py --help       Show this help")
     print()
+    print("GROUP_IDS can be a single group (e.g., '2') or multiple groups (e.g., '2,3,4')")
+    print()
     print("Examples:")
     print("  --add 'YouTube Limit' 2 3600 'youtube,googlevideo.com' 'youtube|googlevideo\\.com'")
+    print("  --add 'YouTube Limit' '2,3' 3600 'youtube,googlevideo.com' 'youtube|googlevideo\\.com'")
 
 if __name__ == "__main__":
     # Initialize database for management commands (doesn't require root for some)
