@@ -1,0 +1,91 @@
+{% extends "base.html" %}
+
+{% block title %}Daemon Logs{% endblock %}
+
+{% block content %}
+<div class="dashboard">
+    <div class="page-header">
+        <h1>Daemon Logs</h1>
+        <div class="log-controls">
+            <label for="line-count">Lines:</label>
+            <select id="line-count" class="log-select" onchange="updateLineCount()">
+                <option value="50">50</option>
+                <option value="100" selected>100</option>
+                <option value="200">200</option>
+                <option value="500">500</option>
+            </select>
+            <button id="pause-btn" class="btn btn-secondary btn-sm" onclick="togglePause()">
+                <span id="pause-icon">&#10074;&#10074;</span>
+                <span id="pause-text">Pause</span>
+            </button>
+            <button class="btn btn-secondary btn-sm" onclick="scrollToBottom()">
+                Scroll to Bottom
+            </button>
+        </div>
+    </div>
+
+    <div class="log-container">
+        <pre id="log-content"
+             hx-get="{{ url_for('logs_entries') }}?lines=100"
+             hx-trigger="every 2s"
+             hx-swap="innerHTML">{{ initial_logs }}</pre>
+    </div>
+</div>
+
+<script>
+    let isPaused = false;
+    const logContent = document.getElementById('log-content');
+    const pauseBtn = document.getElementById('pause-btn');
+    const pauseIcon = document.getElementById('pause-icon');
+    const pauseText = document.getElementById('pause-text');
+    const lineCountSelect = document.getElementById('line-count');
+
+    function togglePause() {
+        isPaused = !isPaused;
+        if (isPaused) {
+            // Remove the hx-trigger to stop polling
+            logContent.removeAttribute('hx-trigger');
+            pauseIcon.innerHTML = '&#9658;';
+            pauseText.textContent = 'Resume';
+            pauseBtn.classList.remove('btn-secondary');
+            pauseBtn.classList.add('btn-warning');
+        } else {
+            // Restore polling
+            logContent.setAttribute('hx-trigger', 'every 2s');
+            htmx.process(logContent);
+            pauseIcon.innerHTML = '&#10074;&#10074;';
+            pauseText.textContent = 'Pause';
+            pauseBtn.classList.remove('btn-warning');
+            pauseBtn.classList.add('btn-secondary');
+            // Trigger immediate refresh
+            htmx.trigger(logContent, 'htmx:trigger');
+        }
+    }
+
+    function updateLineCount() {
+        const lines = lineCountSelect.value;
+        const baseUrl = '{{ url_for("logs_entries") }}';
+        logContent.setAttribute('hx-get', baseUrl + '?lines=' + lines);
+        htmx.process(logContent);
+        // Trigger immediate refresh if not paused
+        if (!isPaused) {
+            htmx.trigger(logContent, 'htmx:trigger');
+        }
+    }
+
+    function scrollToBottom() {
+        const container = document.querySelector('.log-container');
+        container.scrollTop = container.scrollHeight;
+    }
+
+    // Auto-scroll to bottom after each update (optional - can be toggled)
+    document.body.addEventListener('htmx:afterSwap', function(evt) {
+        if (evt.detail.target.id === 'log-content') {
+            scrollToBottom();
+        }
+    });
+
+    // Scroll to bottom on initial load
+    document.addEventListener('DOMContentLoaded', scrollToBottom);
+</script>
+{% endblock %}

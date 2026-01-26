@@ -973,6 +973,55 @@ a:hover {
     font-size: 0.85rem;
 }
 
+/* =============================================================================
+   Log Viewer
+   ============================================================================= */
+
+.log-controls {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+}
+
+.log-controls label {
+    font-weight: 500;
+    color: var(--color-text-muted);
+}
+
+.log-select {
+    padding: 0.375rem 0.75rem;
+    font-size: 0.875rem;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm);
+    background: white;
+    cursor: pointer;
+}
+
+.log-select:focus {
+    border-color: var(--color-primary);
+    outline: none;
+}
+
+.log-container {
+    background: #1e1e1e;
+    border-radius: var(--radius-md);
+    box-shadow: var(--shadow-sm);
+    overflow: auto;
+    height: calc(100vh - 280px);
+    min-height: 400px;
+}
+
+#log-content {
+    margin: 0;
+    padding: 1rem;
+    font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', 'Consolas', monospace;
+    font-size: 0.8rem;
+    line-height: 1.5;
+    color: #d4d4d4;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+}
+
 /* Utilities */
 .mt-3 {
     margin-top: 1rem;

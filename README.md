@@ -152,6 +152,7 @@ The web interface provides a browser-based admin UI for managing triggers, acces
 - **Dashboard**: View all triggers with status indicators
 - **Add/Edit triggers**: Forms with validation and time presets
 - **Quick actions**: Enable/disable, reset, and delete triggers
+- **Live logs**: Real-time daemon log viewer with auto-refresh
 - **Settings page**: Configure the daily reset time
 - **Mobile responsive**: Works on phones and tablets
 - **Pi-hole authentication**: Uses your existing Pi-hole password
@@ -165,6 +166,19 @@ http://<your-pi-hole-ip>:8080
 ```
 
 Log in using your Pi-hole admin password (the same one you use for the Pi-hole admin interface).
+
+### Live Log Viewer
+
+The web interface includes a live log viewer at `http://<your-pi-hole-ip>:8080/logs` that displays daemon output in real-time.
+
+**Features:**
+- **Auto-refresh**: Logs update every 2 seconds via HTMX polling
+- **Pause/Resume**: Stop auto-refresh to examine specific log entries
+- **Line count**: Choose to display 50, 100, 200, or 500 lines
+- **Auto-scroll**: Automatically scrolls to the latest entries
+- **Terminal-style display**: Dark background with monospace font for readability
+
+This is useful for monitoring trigger activity, debugging issues, or verifying that time limits are being tracked correctly.
 
 ### Web Interface Commands
 
