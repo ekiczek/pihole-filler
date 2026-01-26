@@ -21,7 +21,8 @@ A daemon for Pi-hole v6 that monitors DNS queries and automatically blocks speci
 - **Multiple triggers**: Configure different time limits for different services
 - **Group-based**: Apply limits to specific Pi-hole client groups (e.g., "Kids Devices")
 - **Flexible matching**: Use simple domain lists for triggering and regex patterns for blocking
-- **Persistent blocks**: Blocks survive daemon restarts and reboots
+- **Automatic daily reset**: All blocks are removed and timers reset at 3:00 AM local time
+- **Persistent blocks**: Blocks survive daemon restarts and reboots (until the daily reset)
 - **Systemd integration**: Runs as a system service with auto-start on boot
 - **Remote management**: Deploy and manage from your development machine via SSH
 
@@ -128,6 +129,23 @@ Add a trigger to limit YouTube to 1 hour for groups 2 and 3:
 **Example for YouTube:**
 - Trigger: `youtube,youtu.be,googlevideo.com` - Detects YouTube usage
 - Regex: `youtube|(^|\.)youtu\.be$|(^|\.)googlevideo\.com$` - Blocks all YouTube domains
+
+### Daily Reset
+
+The daemon automatically resets all triggers at **3:00 AM local time** each day:
+
+- All active blocks are removed from Pi-hole
+- All timers are reset to zero
+- Devices get a fresh time allowance for the new day
+
+This ensures that time limits apply per-day rather than accumulating indefinitely. The reset happens automatically - no manual intervention required.
+
+To change the reset hour, edit `DAILY_RESET_HOUR` in `pihole_elapsed_time_trigger.py`:
+
+```python
+# Daily reset hour (24-hour format, local time)
+DAILY_RESET_HOUR = 3  # 3:00 AM
+```
 
 ## Usage
 

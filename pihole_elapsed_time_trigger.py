@@ -58,6 +58,10 @@ TRIGGER_DB = Path(__file__).parent / "trigger.db"
 # Domain list type for regex denylist
 DOMAINLIST_TYPE_REGEX_DENY = 3
 
+# Daily reset hour (24-hour format, local time)
+# All triggered blocks are removed and timers reset at this hour
+DAILY_RESET_HOUR = 3  # 3:00 AM
+
 # =============================================================================
 # GLOBAL STATE
 # =============================================================================
@@ -65,6 +69,7 @@ DOMAINLIST_TYPE_REGEX_DENY = 3
 running = True
 triggers = []  # List of active trigger configs
 trigger_states = {}  # State for each trigger: {trigger_id: {'first_access': datetime, 'is_blocked': bool, 'target_ips': set}}
+last_reset_date = None  # Track the last date we performed a daily reset
 
 # =============================================================================
 # DATABASE FUNCTIONS
@@ -654,6 +659,71 @@ def remove_all_blocks():
 
     return True
 
+def perform_daily_reset():
+    """
+    Perform the daily reset: remove all blocks and reset all trigger timers.
+    Called automatically at DAILY_RESET_HOUR (default 3AM).
+    This runs within the daemon, so it resets in-memory state directly.
+    """
+    global trigger_states
+
+    print("=" * 70)
+    print(f"[Daily Reset] Performing automatic daily reset at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print("=" * 70)
+
+    blocks_removed = 0
+
+    # Remove all blocks and reset in-memory state for each trigger
+    for trigger in triggers:
+        state = trigger_states.get(trigger['id'])
+        if not state:
+            continue
+
+        # Check if this trigger has an active block
+        if state['is_blocked']:
+            domain_id = get_existing_block(trigger)
+            if domain_id:
+                print(f"[Daily Reset] Removing block for '{trigger['name']}'")
+                query = f"DELETE FROM domainlist WHERE id = {domain_id}"
+                run_sqlite(query)
+                blocks_removed += 1
+
+            # Clear is_triggered in database
+            set_trigger_active(trigger['id'], False)
+
+        # Reset in-memory state
+        state['first_access'] = None
+        state['is_blocked'] = False
+        print(f"[Daily Reset] Timer reset for '{trigger['name']}'")
+
+    # Also clear any orphaned is_triggered flags in database
+    clear_query = "UPDATE triggers SET is_triggered = 0 WHERE is_triggered = 1"
+    run_sqlite(clear_query, db_path=TRIGGER_DB)
+
+    if blocks_removed > 0:
+        reload_pihole()
+
+    print(f"[Daily Reset] Complete. Removed {blocks_removed} block(s), reset {len(triggers)} trigger(s).")
+    print("=" * 70)
+
+def check_daily_reset():
+    """
+    Check if it's time for the daily reset and perform it if needed.
+    Returns True if a reset was performed.
+    """
+    global last_reset_date
+
+    now = datetime.now()
+    today = now.date()
+
+    # Check if we're in the reset hour and haven't reset today yet
+    if now.hour == DAILY_RESET_HOUR and last_reset_date != today:
+        perform_daily_reset()
+        last_reset_date = today
+        return True
+
+    return False
+
 def reload_pihole():
     """Restart Pi-hole FTL to apply changes."""
     print("[Pi-hole] Restarting FTL service...")
@@ -885,12 +955,17 @@ def main():
         print()
 
     print(f"Log file: {PIHOLE_LOG}")
+    print(f"Daily reset: {DAILY_RESET_HOUR:02d}:00 local time")
     print("=" * 70)
 
     # Clear any previous blocks on startup
     print("\n[Setup] Clearing any previous blocks...")
     for trigger in triggers:
         remove_block(trigger)
+
+    # Initialize daily reset tracking
+    global last_reset_date
+    last_reset_date = None  # Will be set on first reset
 
     print("\n[Monitor] Starting log monitoring...")
     print("-" * 70)
@@ -912,10 +987,11 @@ def main():
                     if client_ip in state['target_ips'] and is_trigger_domain(domain, trigger):
                         handle_trigger_access(trigger, client_ip)
 
-            # Periodically check if any timers expired
+            # Periodically check timers and daily reset
             now = datetime.now()
             if (now - last_timer_check).total_seconds() >= 1:
                 check_timers_expired()
+                check_daily_reset()
                 last_timer_check = now
 
     except Exception as e:
