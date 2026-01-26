@@ -1,0 +1,169 @@
+{% extends "base.html" %}
+
+{% block title %}Edit Trigger{% endblock %}
+
+{% block content %}
+<div class="form-page">
+    <div class="page-header">
+        <h1>Edit Trigger</h1>
+        <div class="header-actions">
+            <a href="{{ url_for('dashboard') }}" class="btn btn-secondary">Cancel</a>
+            <form action="{{ url_for('delete', trigger_id=trigger.id) }}" method="POST" style="display: inline;">
+                <button type="submit" class="btn btn-danger"
+                        onclick="return confirmDelete('{{ trigger.name }}')">
+                    Delete Trigger
+                </button>
+            </form>
+        </div>
+    </div>
+
+    {% if trigger.is_triggered %}
+    <div class="alert alert-warning">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor">
+            <path d="M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z"/>
+        </svg>
+        <div>
+            <strong>This trigger is currently BLOCKED.</strong>
+            <p>Saving changes will remove the current block and reset the timer.</p>
+        </div>
+    </div>
+    {% endif %}
+
+    <form method="POST" class="trigger-form">
+        <div class="form-card">
+            <h2>Basic Settings</h2>
+
+            <div class="form-group">
+                <label for="name">Trigger Name</label>
+                <input type="text" id="name" name="name"
+                       value="{{ form.get('name', trigger.name) }}"
+                       placeholder="e.g., YouTube Limit"
+                       required>
+                <p class="form-help">A descriptive name for this trigger</p>
+            </div>
+
+            <div class="form-group">
+                <label for="group_ids">Pi-hole Groups</label>
+                <input type="text" id="group_ids" name="group_ids"
+                       value="{{ form.get('group_ids', trigger.group_ids) }}"
+                       placeholder="e.g., 2 or 2,3,4"
+                       required>
+                <p class="form-help">Comma-separated group IDs to monitor</p>
+                {% if groups %}
+                <div class="groups-reference">
+                    <strong>Available groups:</strong>
+                    {% for group in groups %}
+                    <span class="group-chip" onclick="addGroup({{ group.id }})" title="{{ group.description or 'Click to add' }}">
+                        {{ group.id }}: {{ group.name }}
+                    </span>
+                    {% endfor %}
+                </div>
+                {% endif %}
+            </div>
+
+            <div class="form-group">
+                <label for="time_limit">Time Limit (seconds)</label>
+                <input type="number" id="time_limit" name="time_limit"
+                       value="{{ form.get('time_limit', trigger.time_limit_seconds) }}"
+                       placeholder="e.g., 3600 (1 hour)"
+                       min="1"
+                       required>
+                <p class="form-help">Time in seconds before blocking kicks in</p>
+                <div class="time-presets">
+                    <button type="button" class="preset-btn" onclick="setTime(900)">15 min</button>
+                    <button type="button" class="preset-btn" onclick="setTime(1800)">30 min</button>
+                    <button type="button" class="preset-btn" onclick="setTime(3600)">1 hour</button>
+                    <button type="button" class="preset-btn" onclick="setTime(7200)">2 hours</button>
+                </div>
+            </div>
+
+            <div class="form-group">
+                <label class="toggle-label">
+                    <input type="checkbox" name="enabled" {% if form.get('enabled', trigger.enabled) %}checked{% endif %}>
+                    <span class="toggle-switch"></span>
+                    <span class="toggle-text">Trigger Enabled</span>
+                </label>
+                <p class="form-help">Disabled triggers are not monitored by the daemon</p>
+            </div>
+        </div>
+
+        <div class="form-card">
+            <h2>Domains</h2>
+
+            <div class="form-group">
+                <label for="trigger_domains">Trigger Domains</label>
+                <textarea id="trigger_domains" name="trigger_domains"
+                          placeholder="youtube,googlevideo.com,ytimg.com"
+                          rows="3"
+                          required>{{ form.get('trigger_domains', trigger.trigger_domains) }}</textarea>
+                <p class="form-help">Comma-separated list of domain keywords to monitor (partial matches)</p>
+            </div>
+
+            <div class="form-group">
+                <label for="block_regex">Block Regex Pattern</label>
+                <textarea id="block_regex" name="block_regex"
+                          placeholder="youtube|(^|\.)youtu\.be$|(^|\.)googlevideo\.com$"
+                          rows="3"
+                          required>{{ form.get('block_regex', trigger.block_regex) }}</textarea>
+                <p class="form-help">Regex pattern to add to Pi-hole's blocklist when time expires</p>
+            </div>
+        </div>
+
+        <div class="form-card">
+            <h2>Trigger Info</h2>
+            <dl class="info-list">
+                <dt>ID</dt>
+                <dd>{{ trigger.id }}</dd>
+
+                <dt>Status</dt>
+                <dd>
+                    {% if trigger.enabled %}
+                    <span class="badge badge-success">Enabled</span>
+                    {% else %}
+                    <span class="badge badge-disabled">Disabled</span>
+                    {% endif %}
+                    {% if trigger.is_triggered %}
+                    <span class="badge badge-danger">BLOCKED</span>
+                    {% endif %}
+                </dd>
+
+                <dt>Created</dt>
+                <dd>{{ trigger.created_at }}</dd>
+            </dl>
+
+            {% if trigger.is_triggered %}
+            <form action="{{ url_for('reset', trigger_id=trigger.id) }}" method="POST" class="mt-3">
+                <button type="submit" class="btn btn-info">
+                    Reset This Trigger
+                </button>
+            </form>
+            {% endif %}
+        </div>
+
+        <div class="form-actions">
+            <a href="{{ url_for('dashboard') }}" class="btn btn-secondary">Cancel</a>
+            <button type="submit" class="btn btn-primary">Save Changes</button>
+        </div>
+    </form>
+</div>
+
+<script>
+function setTime(seconds) {
+    document.getElementById('time_limit').value = seconds;
+}
+
+function addGroup(id) {
+    const input = document.getElementById('group_ids');
+    const current = input.value.trim();
+    if (current) {
+        const groups = current.split(',').map(g => g.trim());
+        if (!groups.includes(String(id))) {
+            groups.push(id);
+            input.value = groups.join(',');
+        }
+    } else {
+        input.value = id;
+    }
+}
+</script>
+{% endblock %}

@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard{% endblock %}
+
+{% block content %}
+<div class="dashboard">
+    <div class="page-header">
+        <h1>Time Triggers</h1>
+        <div class="header-actions">
+            <span class="reset-timer" title="Daily automatic reset">
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor">
+                    <path d="M11.99 2C6.47 2 2 6.48 2 12s4.47 10 9.99 10C17.52 22 22 17.52 22 12S17.52 2 11.99 2zM12 20c-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8-3.58 8-8 8zm.5-13H11v6l5.25 3.15.75-1.23-4.5-2.67z"/>
+                </svg>
+                Reset in {{ next_reset }}
+            </span>
+            <form action="{{ url_for('reset_all') }}" method="POST" style="display: inline;">
+                <button type="submit" class="btn btn-secondary"
+                        onclick="return confirmResetAll()">
+                    Reset All
+                </button>
+            </form>
+            <a href="{{ url_for('add') }}" class="btn btn-primary">
+                Add Trigger
+            </a>
+        </div>
+    </div>
+
+    {% if triggers %}
+    <div class="triggers-table-wrapper">
+        <table class="triggers-table">
+            <thead>
+                <tr>
+                    <th>Name</th>
+                    <th>Groups</th>
+                    <th>Time Limit</th>
+                    <th>Status</th>
+                    <th>Blocked</th>
+                    <th class="actions-col">Actions</th>
+                </tr>
+            </thead>
+            <tbody id="triggers-list">
+                {% for trigger in triggers %}
+                {% include '_trigger_row.html' %}
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% else %}
+    <div class="empty-state">
+        <svg viewBox="0 0 24 24" width="64" height="64" fill="currentColor">
+            <path d="M11.99 2C6.47 2 2 6.48 2 12s4.47 10 9.99 10C17.52 22 22 17.52 22 12S17.52 2 11.99 2zM12 20c-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8-3.58 8-8 8zm.5-13H11v6l5.25 3.15.75-1.23-4.5-2.67z"/>
+        </svg>
+        <h2>No Triggers Configured</h2>
+        <p>Create your first time trigger to start limiting access to domains after a set period.</p>
+        <a href="{{ url_for('add') }}" class="btn btn-primary">
+            Add Your First Trigger
+        </a>
+    </div>
+    {% endif %}
+
+    <div class="info-cards">
+        <div class="info-card">
+            <h3>How It Works</h3>
+            <p>Time triggers monitor DNS queries from specified device groups. When a trigger domain is accessed, a timer starts. After the time limit expires, the block regex is applied to prevent further access until the daily reset.</p>
+        </div>
+        <div class="info-card">
+            <h3>Daily Reset</h3>
+            <p>All triggers automatically reset at 3:00 AM local time. This removes all active blocks and clears all timers, giving a fresh start each day.</p>
+        </div>
+    </div>
+</div>
+{% endblock %}

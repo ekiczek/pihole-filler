@@ -1,0 +1,25 @@
+[Unit]
+Description=Pi-hole Time Trigger Web Interface
+Documentation=https://github.com/your-repo/pihole-filler
+After=network.target pihole-FTL.service
+Wants=pihole-FTL.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 -u /home/pi/trigger_web/app.py
+WorkingDirectory=/home/pi/trigger_web
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+# Run as root (required for Pi-hole database access and daemon control)
+User=root
+Group=root
+
+# Environment variables
+Environment=FLASK_ENV=production
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
