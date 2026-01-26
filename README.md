@@ -21,7 +21,7 @@ A daemon for Pi-hole v6 that monitors DNS queries and automatically blocks speci
 - **Multiple triggers**: Configure different time limits for different services
 - **Group-based**: Apply limits to specific Pi-hole client groups (e.g., "Kids Devices")
 - **Flexible matching**: Use simple domain lists for triggering and regex patterns for blocking
-- **Automatic daily reset**: All blocks are removed and timers reset at 3:00 AM local time
+- **Automatic daily reset**: All blocks are removed and timers reset daily (configurable time)
 - **Persistent blocks**: Blocks survive daemon restarts and reboots (until the daily reset)
 - **Systemd integration**: Runs as a system service with auto-start on boot
 - **Remote management**: Deploy and manage from your development machine via SSH
@@ -55,7 +55,7 @@ Edit `.env` with your settings:
 
 ```bash
 # Pi-hole server IP or hostname
-PIHOLE_HOST=192.168.1.28
+PIHOLE_HOST=<your-pi-hole-ip>
 
 # SSH user (usually 'pi')
 PIHOLE_USER=pi
@@ -73,7 +73,7 @@ Ensure you can SSH to your Pi-hole without a password:
 ssh-keygen -t ed25519 -f ~/.ssh/pihole_key
 
 # Copy the key to your Pi-hole
-ssh-copy-id -i ~/.ssh/pihole_key pi@192.168.1.X
+ssh-copy-id -i ~/.ssh/pihole_key pi@<your-pi-hole-ip>
 ```
 
 ### 4. Deploy to Pi-hole
@@ -133,7 +133,7 @@ Add a trigger to limit YouTube to 1 hour for groups 2 and 3:
 
 ### Daily Reset
 
-The daemon automatically resets all triggers at **3:00 AM local time** each day:
+The daemon automatically resets all triggers at a configurable time each day (default: 3:00 AM):
 
 - All active blocks are removed from Pi-hole
 - All timers are reset to zero
@@ -141,12 +141,7 @@ The daemon automatically resets all triggers at **3:00 AM local time** each day:
 
 This ensures that time limits apply per-day rather than accumulating indefinitely. The reset happens automatically - no manual intervention required.
 
-To change the reset hour, edit `DAILY_RESET_HOUR` in `pihole_elapsed_time_trigger.py`:
-
-```python
-# Daily reset hour (24-hour format, local time)
-DAILY_RESET_HOUR = 3  # 3:00 AM
-```
+To change the reset time, go to the **Settings** page in the web interface (`http://<your-pi-hole-ip>:8080/settings`) and select your preferred hour. The setting uses the Pi-hole server's local time zone.
 
 ## Web Interface
 
@@ -157,6 +152,7 @@ The web interface provides a browser-based admin UI for managing triggers, acces
 - **Dashboard**: View all triggers with status indicators
 - **Add/Edit triggers**: Forms with validation and time presets
 - **Quick actions**: Enable/disable, reset, and delete triggers
+- **Settings page**: Configure the daily reset time
 - **Mobile responsive**: Works on phones and tablets
 - **Pi-hole authentication**: Uses your existing Pi-hole password
 
@@ -324,7 +320,7 @@ Log in using your Pi-hole admin password (the same one you use for the Pi-hole a
 ./deploy.sh --logs
 
 # Recent logs on Pi-hole
-ssh pi@192.168.1.28 "sudo journalctl -u pihole-trigger -n 50"
+ssh pi@<your-pi-hole-ip> "sudo journalctl -u pihole-trigger -n 50"
 ```
 
 ### Daemon won't start
@@ -338,7 +334,7 @@ ssh pi@192.168.1.28 "sudo journalctl -u pihole-trigger -n 50"
 1. Verify the client is in the correct Pi-hole group
 2. Check that the trigger is enabled: `./deploy.sh --list`
 3. Ensure the regex pattern is valid
-4. Try manually restarting Pi-hole FTL: `ssh pi@192.168.1.28 "sudo systemctl restart pihole-FTL"`
+4. Try manually restarting Pi-hole FTL: `ssh pi@<your-pi-hole-ip> "sudo systemctl restart pihole-FTL"`
 
 ### Reset everything
 
