@@ -20,6 +20,7 @@
             <nav class="main-nav">
                 <a href="{{ url_for('dashboard') }}" class="{% if request.endpoint == 'dashboard' %}active{% endif %}">Dashboard</a>
                 <a href="{{ url_for('add') }}" class="{% if request.endpoint == 'add' %}active{% endif %}">Add Trigger</a>
+                <a href="{{ url_for('settings') }}" class="{% if request.endpoint == 'settings' %}active{% endif %}">Settings</a>
                 <a href="{{ url_for('logout') }}" class="logout">Logout</a>
             </nav>
             {% endif %}

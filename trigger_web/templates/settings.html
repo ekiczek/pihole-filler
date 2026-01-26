@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+
+{% block title %}Settings{% endblock %}
+
+{% block content %}
+<div class="form-page">
+    <div class="page-header">
+        <h1>Settings</h1>
+        <a href="{{ url_for('dashboard') }}" class="btn btn-secondary">Back to Dashboard</a>
+    </div>
+
+    <form method="POST" class="trigger-form">
+        <div class="form-card">
+            <h2>Daily Reset</h2>
+            <p class="card-description">All triggers are automatically reset at this time each day. Blocks are removed and timers restart.</p>
+
+            <div class="form-group">
+                <label for="reset_hour">Reset Time</label>
+                <div class="time-select-wrapper">
+                    <select id="reset_hour" name="reset_hour" class="time-select">
+                        {% for hour in range(24) %}
+                        <option value="{{ hour }}" {% if hour == reset_hour %}selected{% endif %}>
+                            {{ '%02d:00'|format(hour) }} ({{ '%d:00 %s'|format(hour if hour <= 12 else hour - 12 if hour > 12 else 12, 'AM' if hour < 12 else 'PM') }})
+                        </option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <p class="form-help">
+                    This uses the Pi-hole server's local time zone.
+                    Currently: <strong>{{ now.strftime('%Z') or 'System default' }}</strong>
+                </p>
+            </div>
+
+            <div class="info-box">
+                <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor">
+                    <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-6h2v6zm0-8h-2V7h2v2z"/>
+                </svg>
+                <div>
+                    <strong>Tip:</strong> If the time zone shown above is incorrect, you can change it on the Pi-hole by running:
+                    <code>sudo timedatectl set-timezone America/New_York</code>
+                    (replace with your timezone)
+                </div>
+            </div>
+        </div>
+
+        <div class="form-actions">
+            <a href="{{ url_for('dashboard') }}" class="btn btn-secondary">Cancel</a>
+            <button type="submit" class="btn btn-primary">Save Settings</button>
+        </div>
+    </form>
+</div>
+{% endblock %}

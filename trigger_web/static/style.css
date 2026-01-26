@@ -915,6 +915,64 @@ a:hover {
     font-size: 0.9rem;
 }
 
+/* Settings Page */
+.card-description {
+    color: var(--color-text-muted);
+    margin: -0.5rem 0 1.25rem;
+    font-size: 0.95rem;
+}
+
+.time-select-wrapper {
+    max-width: 300px;
+}
+
+.time-select {
+    width: 100%;
+    padding: 0.625rem 0.75rem;
+    font-size: 1rem;
+    line-height: 1.5;
+    color: #555;
+    background-color: #fff;
+    border: 1px solid #d2d6de;
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+}
+
+.time-select:focus {
+    border-color: var(--color-primary);
+    outline: none;
+}
+
+.info-box {
+    display: flex;
+    gap: 0.75rem;
+    padding: 1rem;
+    background: #e8f4fc;
+    border: 1px solid #bee5eb;
+    border-radius: var(--radius-sm);
+    margin-top: 1.5rem;
+    color: #0c5460;
+}
+
+.info-box svg {
+    flex-shrink: 0;
+    opacity: 0.7;
+}
+
+.info-box strong {
+    display: block;
+    margin-bottom: 0.25rem;
+}
+
+.info-box code {
+    display: inline-block;
+    margin-top: 0.5rem;
+    padding: 0.25rem 0.5rem;
+    background: rgba(0,0,0,0.05);
+    border-radius: var(--radius-sm);
+    font-size: 0.85rem;
+}
+
 /* Utilities */
 .mt-3 {
     margin-top: 1rem;
