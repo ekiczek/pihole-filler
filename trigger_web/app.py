@@ -358,6 +358,22 @@ def restart_daemon():
         return False
 
 
+def get_daemon_logs(lines=100):
+    """Fetch recent logs from the pihole-trigger daemon."""
+    try:
+        result = subprocess.run(
+            ["journalctl", "-u", "pihole-trigger", "-n", str(lines), "--no-pager"],
+            capture_output=True,
+            text=True,
+            timeout=5
+        )
+        return result.stdout if result.returncode == 0 else f"Error: {result.stderr}"
+    except subprocess.TimeoutExpired:
+        return "Error: Timeout fetching logs"
+    except Exception as e:
+        return f"Error fetching logs: {e}"
+
+
 def reload_pihole():
     """Restart Pi-hole FTL to apply changes."""
     try:
@@ -808,6 +824,29 @@ def reset_all():
         flash(f'Failed to reset triggers: {message}', 'error')
 
     return redirect(url_for('dashboard'))
+
+
+# =============================================================================
+# ROUTES - LOGS
+# =============================================================================
+
+@app.route('/logs')
+@login_required
+def logs():
+    """Log viewer page."""
+    initial_logs = get_daemon_logs(100)
+    return render_template('logs.html', initial_logs=initial_logs)
+
+
+@app.route('/logs/entries')
+@login_required
+def logs_entries():
+    """HTMX endpoint for log content updates."""
+    lines = request.args.get('lines', 100, type=int)
+    # Clamp lines to reasonable range
+    lines = max(50, min(500, lines))
+    log_content = get_daemon_logs(lines)
+    return log_content
 
 
 # =============================================================================
