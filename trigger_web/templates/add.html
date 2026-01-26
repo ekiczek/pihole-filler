@@ -23,21 +23,24 @@
             </div>
 
             <div class="form-group">
-                <label for="group_ids">Pi-hole Groups</label>
-                <input type="text" id="group_ids" name="group_ids"
-                       value="{{ form.get('group_ids', '') }}"
-                       placeholder="e.g., 2 or 2,3,4"
-                       required>
-                <p class="form-help">Comma-separated group IDs to monitor</p>
+                <label>Pi-hole Groups</label>
                 {% if groups %}
-                <div class="groups-reference">
-                    <strong>Available groups:</strong>
+                <div class="group-checkboxes">
                     {% for group in groups %}
-                    <span class="group-chip" onclick="addGroup({{ group.id }})" title="{{ group.description or 'Click to add' }}">
-                        {{ group.id }}: {{ group.name }}
-                    </span>
+                    <label class="checkbox-label">
+                        <input type="checkbox" name="group_ids" value="{{ group.id }}"
+                               {% if group.id|string in (form.get('selected_groups', [])) %}checked{% endif %}>
+                        <span class="checkbox-box"></span>
+                        <span class="checkbox-text">
+                            <strong>{{ group.name }}</strong>
+                            {% if group.description %}<small>{{ group.description }}</small>{% endif %}
+                        </span>
+                    </label>
                     {% endfor %}
                 </div>
+                <p class="form-help">Select one or more groups to monitor</p>
+                {% else %}
+                <p class="form-help text-warning">No groups found in Pi-hole. Create groups in Pi-hole admin first.</p>
                 {% endif %}
             </div>
 
@@ -100,19 +103,14 @@ function setTime(seconds) {
     updatePreview();
 }
 
-function addGroup(id) {
-    const input = document.getElementById('group_ids');
-    const current = input.value.trim();
-    if (current) {
-        const groups = current.split(',').map(g => g.trim());
-        if (!groups.includes(String(id))) {
-            groups.push(id);
-            input.value = groups.join(',');
-        }
-    } else {
-        input.value = id;
-    }
-    updatePreview();
+function getSelectedGroups() {
+    const checkboxes = document.querySelectorAll('input[name="group_ids"]:checked');
+    const groups = [];
+    checkboxes.forEach(cb => {
+        const label = cb.closest('.checkbox-label').querySelector('strong');
+        groups.push(label ? label.textContent : cb.value);
+    });
+    return groups;
 }
 
 function formatTime(seconds) {
@@ -129,21 +127,21 @@ function formatTime(seconds) {
 
 function updatePreview() {
     const name = document.getElementById('name').value.trim();
-    const groups = document.getElementById('group_ids').value.trim();
+    const groups = getSelectedGroups();
     const time = document.getElementById('time_limit').value.trim();
     const domains = document.getElementById('trigger_domains').value.trim();
     const regex = document.getElementById('block_regex').value.trim();
 
     const preview = document.getElementById('preview');
 
-    if (!name && !groups && !time && !domains) {
+    if (!name && groups.length === 0 && !time && !domains) {
         preview.innerHTML = '<p class="preview-placeholder">Fill in the form to see a preview</p>';
         return;
     }
 
     let html = '<dl class="preview-list">';
     if (name) html += '<dt>Name</dt><dd>' + escapeHtml(name) + '</dd>';
-    if (groups) html += '<dt>Groups</dt><dd>' + escapeHtml(groups) + '</dd>';
+    if (groups.length > 0) html += '<dt>Groups</dt><dd>' + escapeHtml(groups.join(', ')) + '</dd>';
     if (time) html += '<dt>Time Limit</dt><dd>' + formatTime(parseInt(time)) + ' (' + time + ' seconds)</dd>';
     if (domains) html += '<dt>Trigger Domains</dt><dd>' + escapeHtml(domains) + '</dd>';
     if (regex) html += '<dt>Block Regex</dt><dd><code>' + escapeHtml(regex) + '</code></dd>';
@@ -161,6 +159,7 @@ function escapeHtml(text) {
 // Update preview on input
 document.querySelectorAll('input, textarea').forEach(el => {
     el.addEventListener('input', updatePreview);
+    el.addEventListener('change', updatePreview);
 });
 
 // Initial preview

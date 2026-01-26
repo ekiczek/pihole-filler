@@ -218,6 +218,32 @@ def get_pihole_groups():
     return groups
 
 
+def get_group_names(group_ids_str):
+    """Convert comma-separated group IDs to a display string with names."""
+    if not group_ids_str:
+        return ""
+
+    groups = get_pihole_groups()
+    group_map = {g['id']: g['name'] for g in groups}
+
+    try:
+        ids = [int(g.strip()) for g in group_ids_str.split(',') if g.strip()]
+        names = [group_map.get(gid, f"#{gid}") for gid in ids]
+        return ", ".join(names)
+    except ValueError:
+        return group_ids_str
+
+
+def get_group_ids_list(group_ids_str):
+    """Convert comma-separated group IDs string to list of ints."""
+    if not group_ids_str:
+        return []
+    try:
+        return [int(g.strip()) for g in group_ids_str.split(',') if g.strip()]
+    except ValueError:
+        return []
+
+
 # =============================================================================
 # AUTHENTICATION
 # =============================================================================
@@ -410,16 +436,19 @@ def validate_trigger_form(form):
     if not name:
         errors.append("Name is required")
 
-    group_ids = form.get('group_ids', '').strip()
-    if not group_ids:
+    # Handle both string format and list format for group_ids
+    group_ids = form.get('group_ids', '').strip() if isinstance(form.get('group_ids'), str) else form.get('group_ids', '')
+    selected_groups = form.get('selected_groups', [])
+
+    if not group_ids and not selected_groups:
         errors.append("At least one group must be selected")
-    else:
+    elif group_ids:
         try:
             [int(g.strip()) for g in group_ids.split(',') if g.strip()]
         except ValueError:
             errors.append("Invalid group IDs")
 
-    time_limit = form.get('time_limit', '').strip()
+    time_limit = form.get('time_limit', '').strip() if isinstance(form.get('time_limit'), str) else str(form.get('time_limit', ''))
     if not time_limit:
         errors.append("Time limit is required")
     else:
@@ -486,9 +515,10 @@ def dashboard():
     triggers = get_all_triggers()
     next_reset = get_next_reset_time()
 
-    # Add formatted time to each trigger
+    # Add formatted time and group names to each trigger
     for trigger in triggers:
         trigger['time_formatted'] = format_time(trigger['time_limit_seconds'])
+        trigger['group_names'] = get_group_names(trigger['group_ids'])
 
     return render_template('dashboard.html',
                           triggers=triggers,
@@ -523,16 +553,24 @@ def add():
     groups = get_pihole_groups()
 
     if request.method == 'POST':
-        errors = validate_trigger_form(request.form)
+        # Handle multiselect - getlist returns list of selected values
+        selected_groups = request.form.getlist('group_ids')
+        group_ids = ','.join(selected_groups) if selected_groups else ''
+
+        # Create a modified form dict for validation
+        form_data = request.form.to_dict()
+        form_data['group_ids'] = group_ids
+        form_data['selected_groups'] = selected_groups
+
+        errors = validate_trigger_form(form_data)
 
         if errors:
             for error in errors:
                 flash(error, 'error')
-            return render_template('add.html', groups=groups, form=request.form)
+            return render_template('add.html', groups=groups, form=form_data)
 
         # Extract form data
         name = request.form['name'].strip()
-        group_ids = request.form['group_ids'].strip()
         time_limit = int(request.form['time_limit'])
         trigger_domains = request.form['trigger_domains'].strip()
         block_regex = request.form['block_regex'].strip()
@@ -545,7 +583,7 @@ def add():
             return redirect(url_for('dashboard'))
         else:
             flash(f'Failed to create trigger: {output}', 'error')
-            return render_template('add.html', groups=groups, form=request.form)
+            return render_template('add.html', groups=groups, form=form_data)
 
     return render_template('add.html', groups=groups, form={})
 
@@ -564,15 +602,27 @@ def edit(trigger_id):
         flash('Trigger not found', 'error')
         return redirect(url_for('dashboard'))
 
+    # Add selected_groups list for the template
+    trigger['selected_groups'] = [str(g) for g in get_group_ids_list(trigger['group_ids'])]
+
     groups = get_pihole_groups()
 
     if request.method == 'POST':
-        errors = validate_trigger_form(request.form)
+        # Handle multiselect - getlist returns list of selected values
+        selected_groups = request.form.getlist('group_ids')
+        group_ids = ','.join(selected_groups) if selected_groups else ''
+
+        # Create a modified form dict for validation
+        form_data = request.form.to_dict()
+        form_data['group_ids'] = group_ids
+        form_data['selected_groups'] = selected_groups
+
+        errors = validate_trigger_form(form_data)
 
         if errors:
             for error in errors:
                 flash(error, 'error')
-            return render_template('edit.html', trigger=trigger, groups=groups, form=request.form)
+            return render_template('edit.html', trigger=trigger, groups=groups, form=form_data)
 
         # Check if trigger was active - need to remove block before editing
         if trigger['is_triggered']:
@@ -581,7 +631,6 @@ def edit(trigger_id):
 
         # Extract form data
         name = request.form['name'].strip()
-        group_ids = request.form['group_ids'].strip()
         time_limit = int(request.form['time_limit'])
         trigger_domains = request.form['trigger_domains'].strip()
         block_regex = request.form['block_regex'].strip()
@@ -603,7 +652,7 @@ def edit(trigger_id):
             return redirect(url_for('dashboard'))
         else:
             flash(f'Failed to update trigger: {output}', 'error')
-            return render_template('edit.html', trigger=trigger, groups=groups, form=request.form)
+            return render_template('edit.html', trigger=trigger, groups=groups, form=form_data)
 
     return render_template('edit.html', trigger=trigger, groups=groups, form=trigger)
 
@@ -665,7 +714,9 @@ def toggle(trigger_id):
 
         # HTMX request - return partial HTML
         if request.headers.get('HX-Request'):
-            return render_template('_trigger_row.html', trigger=get_trigger(trigger_id))
+            updated_trigger = get_trigger(trigger_id)
+            updated_trigger['group_names'] = get_group_names(updated_trigger['group_ids'])
+            return render_template('_trigger_row.html', trigger=updated_trigger)
 
         flash(f'Trigger "{trigger["name"]}" {status}', 'success')
     else:
@@ -691,7 +742,9 @@ def reset(trigger_id):
     if success:
         # HTMX request - return partial HTML
         if request.headers.get('HX-Request'):
-            return render_template('_trigger_row.html', trigger=get_trigger(trigger_id))
+            updated_trigger = get_trigger(trigger_id)
+            updated_trigger['group_names'] = get_group_names(updated_trigger['group_ids'])
+            return render_template('_trigger_row.html', trigger=updated_trigger)
 
         flash(f'Trigger "{trigger["name"]}" has been reset', 'success')
     else:
