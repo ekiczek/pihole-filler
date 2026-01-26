@@ -1,1 +1,334 @@
-# pihole-filler
+# Pi-hole Elapsed Time Trigger
+
+A daemon for Pi-hole v6 that monitors DNS queries and automatically blocks specified domains for device groups after a configurable time limit. Perfect for implementing screen time limits on services like YouTube.
+
+## How It Works
+
+1. **Monitor**: The daemon watches Pi-hole's DNS query log in real-time
+2. **Track**: When a device in a monitored group accesses a trigger domain (e.g., youtube.com), a timer starts
+3. **Block**: After the time limit expires, a regex deny rule is added to Pi-hole blocking those domains for the group
+4. **Persist**: Block rules are stored in Pi-hole's gravity database and survive reboots
+
+```
+┌─────────────┐     ┌─────────────┐     ┌─────────────┐     ┌─────────────┐
+│   Device    │────>│   Pi-hole   │────>│   Daemon    │────>│   Block!    │
+│ watches YT  │     │  logs DNS   │     │ starts timer│     │ after limit │
+└─────────────┘     └─────────────┘     └─────────────┘     └─────────────┘
+```
+
+## Features
+
+- **Multiple triggers**: Configure different time limits for different services
+- **Group-based**: Apply limits to specific Pi-hole client groups (e.g., "Kids Devices")
+- **Flexible matching**: Use simple domain lists for triggering and regex patterns for blocking
+- **Persistent blocks**: Blocks survive daemon restarts and reboots
+- **Systemd integration**: Runs as a system service with auto-start on boot
+- **Remote management**: Deploy and manage from your development machine via SSH
+
+## Requirements
+
+- **Pi-hole v6+** running on a Raspberry Pi (or similar Linux system)
+- **Python 3.7+** (included with Raspberry Pi OS)
+- **SSH access** to the Pi-hole server
+- **Root access** on the Pi-hole (for database and log access)
+
+## Installation
+
+### 1. Clone the Repository
+
+```bash
+git clone https://github.com/your-repo/pihole-filler.git
+cd pihole-filler
+```
+
+### 2. Configure Environment
+
+Copy the example environment file and configure your Pi-hole connection:
+
+```bash
+cp .env.example .env
+```
+
+Edit `.env` with your settings:
+
+```bash
+# Pi-hole server IP or hostname
+PIHOLE_HOST=192.168.1.28
+
+# SSH user (usually 'pi')
+PIHOLE_USER=pi
+
+# Path to SSH private key
+PIHOLE_SSH_KEY=~/.ssh/id_rsa
+```
+
+### 3. Set Up SSH Key Authentication
+
+Ensure you can SSH to your Pi-hole without a password:
+
+```bash
+# Generate a key if you don't have one
+ssh-keygen -t ed25519 -f ~/.ssh/pihole_key
+
+# Copy the key to your Pi-hole
+ssh-copy-id -i ~/.ssh/pihole_key pi@192.168.1.X
+```
+
+### 4. Deploy to Pi-hole
+
+```bash
+./deploy.sh
+```
+
+This will:
+- Copy the script to your Pi-hole
+- Install the systemd service
+- Enable auto-start on boot
+- Start the daemon
+
+## Configuration
+
+### Pi-hole Groups
+
+Before creating triggers, set up client groups in Pi-hole:
+
+1. Go to Pi-hole Admin > Group Management > Groups
+2. Create a group (e.g., "Kids Devices")
+3. Go to Group Management > Clients
+4. Assign devices to the group
+
+Note the **Group ID** (shown in the Groups list) - you'll need it for triggers.
+
+### Creating Triggers
+
+Add a trigger to limit YouTube to 1 hour for groups 2 and 3:
+
+```bash
+./deploy.sh --add \
+  -n 'YouTube Limit' \
+  -g 2,3 \
+  -t 3600 \
+  -d 'youtube,youtu.be,googlevideo.com,ytimg.com' \
+  -r 'youtube|(^|\.)youtu\.be$|(^|\.)googlevideo\.com$|(^|\.)ytimg\.com$'
+```
+
+**Parameters:**
+- `-n, --name`: A descriptive name for the trigger
+- `-g, --groups`: Pi-hole group ID(s), comma-separated
+- `-t, --time`: Time limit in seconds (3600 = 1 hour)
+- `-d, --domains`: Domains that start the timer (comma-separated, partial match)
+- `-r, --regex`: Regex pattern to block when time expires
+
+### Trigger Domains vs Block Regex
+
+- **Trigger domains** (`-d`): Simple substring matching to detect when a service is being used. When any DNS query contains one of these strings, the timer starts.
+
+- **Block regex** (`-r`): The actual regex pattern added to Pi-hole's deny list when the timer expires. Should be comprehensive to fully block the service.
+
+**Example for YouTube:**
+- Trigger: `youtube,youtu.be,googlevideo.com` - Detects YouTube usage
+- Regex: `youtube|(^|\.)youtu\.be$|(^|\.)googlevideo\.com$` - Blocks all YouTube domains
+
+## Usage
+
+### Deployment Commands
+
+```bash
+# Deploy script and restart daemon
+./deploy.sh
+
+# Check daemon status
+./deploy.sh --status
+
+# View live logs
+./deploy.sh --logs
+
+# Stop the daemon
+./deploy.sh --stop
+
+# Start the daemon
+./deploy.sh --start
+```
+
+### Trigger Management
+
+```bash
+# List all triggers
+./deploy.sh --list
+
+# Add a new trigger
+./deploy.sh --add -n 'Name' -g 2 -t 3600 -d 'domain.com' -r 'domain\.com'
+
+# Edit a trigger
+./deploy.sh --edit 1 -t 7200              # Change time limit
+./deploy.sh --edit 1 -n 'New Name'        # Change name
+./deploy.sh --edit 1 -g 2,3,4             # Change groups
+./deploy.sh --edit 1 --disable            # Disable trigger
+./deploy.sh --edit 1 --enable             # Enable trigger
+
+# Remove a trigger
+./deploy.sh --remove 1
+
+# Reset a trigger (remove active block, restart timer)
+./deploy.sh --reset 1
+
+# Remove all active blocks
+./deploy.sh --unblock
+```
+
+### Command Reference
+
+| Command | Description |
+|---------|-------------|
+| `--list` | List all configured triggers |
+| `--add [OPTIONS]` | Add a new trigger |
+| `--edit ID [OPTIONS]` | Edit an existing trigger |
+| `--remove ID` | Remove a trigger and its active block |
+| `--reset ID` | Remove active block and reset timer |
+| `--unblock` | Remove all active blocks |
+| `--status` | Show daemon status |
+| `--logs` | View live daemon logs |
+| `--stop` | Stop the daemon |
+| `--start` | Start the daemon |
+
+### Field Options
+
+| Option | Description |
+|--------|-------------|
+| `-n, --name` | Trigger name |
+| `-g, --groups` | Pi-hole group IDs (comma-separated) |
+| `-t, --time` | Time limit in seconds |
+| `-d, --domains` | Trigger domains (comma-separated) |
+| `-r, --regex` | Block regex pattern |
+| `--enable` | Enable the trigger |
+| `--disable` | Disable the trigger |
+
+## Examples
+
+### Limit YouTube to 30 minutes for Kids
+
+```bash
+./deploy.sh --add \
+  -n 'Kids YouTube' \
+  -g 2 \
+  -t 1800 \
+  -d 'youtube,youtu.be,googlevideo.com,ytimg.com' \
+  -r 'youtube|(^|\.)youtu\.be$|(^|\.)googlevideo\.com$|(^|\.)ytimg\.com$'
+```
+
+### Limit TikTok to 1 hour
+
+```bash
+./deploy.sh --add \
+  -n 'TikTok Limit' \
+  -g 2 \
+  -t 3600 \
+  -d 'tiktok.com,tiktokcdn.com' \
+  -r '(^|\.)tiktok\.com$|(^|\.)tiktokcdn\.com$'
+```
+
+### Limit Netflix to 2 hours
+
+```bash
+./deploy.sh --add \
+  -n 'Netflix Limit' \
+  -g 2 \
+  -t 7200 \
+  -d 'netflix.com,nflxvideo.net' \
+  -r '(^|\.)netflix\.com$|(^|\.)nflxvideo\.net$'
+```
+
+### Extend time limit temporarily
+
+```bash
+# Double the time limit for trigger 1
+./deploy.sh --edit 1 -t 7200
+
+# Reset to remove current block and start fresh
+./deploy.sh --reset 1
+```
+
+## Troubleshooting
+
+### Check daemon status
+
+```bash
+./deploy.sh --status
+```
+
+### View logs
+
+```bash
+# Live logs
+./deploy.sh --logs
+
+# Recent logs on Pi-hole
+ssh pi@192.168.1.28 "sudo journalctl -u pihole-trigger -n 50"
+```
+
+### Daemon won't start
+
+1. Check if Pi-hole is running: `pihole status`
+2. Verify the trigger database exists: `ls -la /home/pi/trigger.db`
+3. Check for Python errors in logs: `./deploy.sh --logs`
+
+### Blocks not being applied
+
+1. Verify the client is in the correct Pi-hole group
+2. Check that the trigger is enabled: `./deploy.sh --list`
+3. Ensure the regex pattern is valid
+4. Try manually restarting Pi-hole FTL: `ssh pi@192.168.1.28 "sudo systemctl restart pihole-FTL"`
+
+### Reset everything
+
+```bash
+# Remove all blocks
+./deploy.sh --unblock
+
+# Restart daemon
+./deploy.sh --stop && ./deploy.sh --start
+```
+
+## Architecture
+
+```
+Local Machine                    Pi-hole Server
+┌──────────────┐                ┌─────────────────────────────────────┐
+│              │                │                                     │
+│  deploy.sh   │<──── SSH ────> │  pihole_elapsed_time_trigger.py     │
+│              │                │            │                        │
+└──────────────┘                │            v                        │
+                                │  ┌─────────────────┐                │
+                                │  │   trigger.db    │ (config)       │
+                                │  └─────────────────┘                │
+                                │            │                        │
+                                │            v                        │
+                                │  ┌─────────────────┐                │
+                                │  │  pihole.log     │ (monitor)      │
+                                │  └─────────────────┘                │
+                                │            │                        │
+                                │            v                        │
+                                │  ┌─────────────────┐                │
+                                │  │   gravity.db    │ (block rules)  │
+                                │  └─────────────────┘                │
+                                │                                     │
+                                └─────────────────────────────────────┘
+```
+
+## Files
+
+| File | Location | Description |
+|------|----------|-------------|
+| `deploy.sh` | Local | Deployment and management script |
+| `pihole_elapsed_time_trigger.py` | Pi-hole: `/home/pi/` | Main daemon script |
+| `pihole-trigger.service` | Pi-hole: `/etc/systemd/system/` | Systemd service file |
+| `trigger.db` | Pi-hole: `/home/pi/` | SQLite database for trigger config |
+| `.env` | Local | Environment configuration |
+
+## License
+
+MIT License - See LICENSE file for details.
+
+## Contributing
+
+Contributions are welcome! Please open an issue or submit a pull request.
