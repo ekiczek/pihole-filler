@@ -3,7 +3,7 @@
         <a href="{{ url_for('edit', trigger_id=trigger.id) }}">{{ trigger.name }}</a>
     </td>
     <td class="trigger-groups">
-        <span class="badge badge-group">{{ trigger.group_ids }}</span>
+        <span class="badge badge-group" title="IDs: {{ trigger.group_ids }}">{{ trigger.group_names or trigger.group_ids }}</span>
     </td>
     <td class="trigger-time">
         {{ trigger.time_limit_seconds | format_time }}
