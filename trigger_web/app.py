@@ -555,6 +555,7 @@ def dashboard():
     """Main dashboard showing all triggers."""
     triggers = get_all_triggers()
     next_reset = get_next_reset_time()
+    reset_hour = get_reset_hour()
 
     # Add formatted time and group names to each trigger
     for trigger in triggers:
@@ -563,7 +564,8 @@ def dashboard():
 
     return render_template('dashboard.html',
                           triggers=triggers,
-                          next_reset=next_reset)
+                          next_reset=next_reset,
+                          reset_hour=reset_hour)
 
 
 @app.route('/status')

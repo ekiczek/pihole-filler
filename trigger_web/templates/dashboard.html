@@ -65,7 +65,7 @@
         </div>
         <div class="info-card">
             <h3>Daily Reset</h3>
-            <p>All triggers automatically reset at 3:00 AM local time. This removes all active blocks and clears all timers, giving a fresh start each day.</p>
+            <p>All triggers automatically reset at {{ '%02d:00'|format(reset_hour) }} local time. This removes all active blocks and clears all timers, giving a fresh start each day.</p>
         </div>
     </div>
 </div>
