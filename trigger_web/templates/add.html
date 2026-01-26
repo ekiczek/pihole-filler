@@ -1,0 +1,169 @@
+{% extends "base.html" %}
+
+{% block title %}Add Trigger{% endblock %}
+
+{% block content %}
+<div class="form-page">
+    <div class="page-header">
+        <h1>Add New Trigger</h1>
+        <a href="{{ url_for('dashboard') }}" class="btn btn-secondary">Cancel</a>
+    </div>
+
+    <form method="POST" class="trigger-form">
+        <div class="form-card">
+            <h2>Basic Settings</h2>
+
+            <div class="form-group">
+                <label for="name">Trigger Name</label>
+                <input type="text" id="name" name="name"
+                       value="{{ form.get('name', '') }}"
+                       placeholder="e.g., YouTube Limit"
+                       required>
+                <p class="form-help">A descriptive name for this trigger</p>
+            </div>
+
+            <div class="form-group">
+                <label for="group_ids">Pi-hole Groups</label>
+                <input type="text" id="group_ids" name="group_ids"
+                       value="{{ form.get('group_ids', '') }}"
+                       placeholder="e.g., 2 or 2,3,4"
+                       required>
+                <p class="form-help">Comma-separated group IDs to monitor</p>
+                {% if groups %}
+                <div class="groups-reference">
+                    <strong>Available groups:</strong>
+                    {% for group in groups %}
+                    <span class="group-chip" onclick="addGroup({{ group.id }})" title="{{ group.description or 'Click to add' }}">
+                        {{ group.id }}: {{ group.name }}
+                    </span>
+                    {% endfor %}
+                </div>
+                {% endif %}
+            </div>
+
+            <div class="form-group">
+                <label for="time_limit">Time Limit (seconds)</label>
+                <input type="number" id="time_limit" name="time_limit"
+                       value="{{ form.get('time_limit', '') }}"
+                       placeholder="e.g., 3600 (1 hour)"
+                       min="1"
+                       required>
+                <p class="form-help">Time in seconds before blocking kicks in</p>
+                <div class="time-presets">
+                    <button type="button" class="preset-btn" onclick="setTime(900)">15 min</button>
+                    <button type="button" class="preset-btn" onclick="setTime(1800)">30 min</button>
+                    <button type="button" class="preset-btn" onclick="setTime(3600)">1 hour</button>
+                    <button type="button" class="preset-btn" onclick="setTime(7200)">2 hours</button>
+                </div>
+            </div>
+        </div>
+
+        <div class="form-card">
+            <h2>Domains</h2>
+
+            <div class="form-group">
+                <label for="trigger_domains">Trigger Domains</label>
+                <textarea id="trigger_domains" name="trigger_domains"
+                          placeholder="youtube,googlevideo.com,ytimg.com"
+                          rows="3"
+                          required>{{ form.get('trigger_domains', '') }}</textarea>
+                <p class="form-help">Comma-separated list of domain keywords to monitor (partial matches)</p>
+            </div>
+
+            <div class="form-group">
+                <label for="block_regex">Block Regex Pattern</label>
+                <textarea id="block_regex" name="block_regex"
+                          placeholder="youtube|(^|\.)youtu\.be$|(^|\.)googlevideo\.com$"
+                          rows="3"
+                          required>{{ form.get('block_regex', '') }}</textarea>
+                <p class="form-help">Regex pattern to add to Pi-hole's blocklist when time expires</p>
+            </div>
+        </div>
+
+        <div class="form-card preview-card">
+            <h2>Preview</h2>
+            <div id="preview" class="preview-content">
+                <p class="preview-placeholder">Fill in the form to see a preview</p>
+            </div>
+        </div>
+
+        <div class="form-actions">
+            <a href="{{ url_for('dashboard') }}" class="btn btn-secondary">Cancel</a>
+            <button type="submit" class="btn btn-primary">Create Trigger</button>
+        </div>
+    </form>
+</div>
+
+<script>
+function setTime(seconds) {
+    document.getElementById('time_limit').value = seconds;
+    updatePreview();
+}
+
+function addGroup(id) {
+    const input = document.getElementById('group_ids');
+    const current = input.value.trim();
+    if (current) {
+        const groups = current.split(',').map(g => g.trim());
+        if (!groups.includes(String(id))) {
+            groups.push(id);
+            input.value = groups.join(',');
+        }
+    } else {
+        input.value = id;
+    }
+    updatePreview();
+}
+
+function formatTime(seconds) {
+    if (seconds < 60) return seconds + 's';
+    if (seconds < 3600) {
+        const mins = Math.floor(seconds / 60);
+        const secs = seconds % 60;
+        return secs ? mins + 'm ' + secs + 's' : mins + 'm';
+    }
+    const hours = Math.floor(seconds / 3600);
+    const mins = Math.floor((seconds % 3600) / 60);
+    return mins ? hours + 'h ' + mins + 'm' : hours + 'h';
+}
+
+function updatePreview() {
+    const name = document.getElementById('name').value.trim();
+    const groups = document.getElementById('group_ids').value.trim();
+    const time = document.getElementById('time_limit').value.trim();
+    const domains = document.getElementById('trigger_domains').value.trim();
+    const regex = document.getElementById('block_regex').value.trim();
+
+    const preview = document.getElementById('preview');
+
+    if (!name && !groups && !time && !domains) {
+        preview.innerHTML = '<p class="preview-placeholder">Fill in the form to see a preview</p>';
+        return;
+    }
+
+    let html = '<dl class="preview-list">';
+    if (name) html += '<dt>Name</dt><dd>' + escapeHtml(name) + '</dd>';
+    if (groups) html += '<dt>Groups</dt><dd>' + escapeHtml(groups) + '</dd>';
+    if (time) html += '<dt>Time Limit</dt><dd>' + formatTime(parseInt(time)) + ' (' + time + ' seconds)</dd>';
+    if (domains) html += '<dt>Trigger Domains</dt><dd>' + escapeHtml(domains) + '</dd>';
+    if (regex) html += '<dt>Block Regex</dt><dd><code>' + escapeHtml(regex) + '</code></dd>';
+    html += '</dl>';
+
+    preview.innerHTML = html;
+}
+
+function escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+}
+
+// Update preview on input
+document.querySelectorAll('input, textarea').forEach(el => {
+    el.addEventListener('input', updatePreview);
+});
+
+// Initial preview
+updatePreview();
+</script>
+{% endblock %}

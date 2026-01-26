@@ -25,6 +25,7 @@ A daemon for Pi-hole v6 that monitors DNS queries and automatically blocks speci
 - **Persistent blocks**: Blocks survive daemon restarts and reboots (until the daily reset)
 - **Systemd integration**: Runs as a system service with auto-start on boot
 - **Remote management**: Deploy and manage from your development machine via SSH
+- **Web interface**: Browser-based admin UI for managing triggers (port 8080)
 
 ## Requirements
 
@@ -147,12 +148,50 @@ To change the reset hour, edit `DAILY_RESET_HOUR` in `pihole_elapsed_time_trigge
 DAILY_RESET_HOUR = 3  # 3:00 AM
 ```
 
+## Web Interface
+
+The web interface provides a browser-based admin UI for managing triggers, accessible at `http://<pi-hole-ip>:8080`.
+
+### Features
+
+- **Dashboard**: View all triggers with status indicators
+- **Add/Edit triggers**: Forms with validation and time presets
+- **Quick actions**: Enable/disable, reset, and delete triggers
+- **Mobile responsive**: Works on phones and tablets
+- **Pi-hole authentication**: Uses your existing Pi-hole password
+
+### Accessing the Web Interface
+
+After deployment, access the web interface at:
+
+```
+http://<your-pi-hole-ip>:8080
+```
+
+Log in using your Pi-hole admin password (the same one you use for the Pi-hole admin interface).
+
+### Web Interface Commands
+
+```bash
+# Check web server status
+./deploy.sh --web-status
+
+# View web server logs
+./deploy.sh --web-logs
+
+# Stop the web server
+./deploy.sh --web-stop
+
+# Start the web server
+./deploy.sh --web-start
+```
+
 ## Usage
 
 ### Deployment Commands
 
 ```bash
-# Deploy script and restart daemon
+# Deploy everything (daemon + web interface) and restart services
 ./deploy.sh
 
 # Check daemon status
@@ -208,6 +247,10 @@ DAILY_RESET_HOUR = 3  # 3:00 AM
 | `--logs` | View live daemon logs |
 | `--stop` | Stop the daemon |
 | `--start` | Start the daemon |
+| `--web-status` | Show web server status |
+| `--web-logs` | View live web server logs |
+| `--web-stop` | Stop the web server |
+| `--web-start` | Start the web server |
 
 ### Field Options
 
@@ -311,26 +354,29 @@ ssh pi@192.168.1.28 "sudo journalctl -u pihole-trigger -n 50"
 
 ```
 Local Machine                    Pi-hole Server
-┌──────────────┐                ┌─────────────────────────────────────┐
-│              │                │                                     │
-│  deploy.sh   │<──── SSH ────> │  pihole_elapsed_time_trigger.py     │
-│              │                │            │                        │
-└──────────────┘                │            v                        │
-                                │  ┌─────────────────┐                │
-                                │  │   trigger.db    │ (config)       │
-                                │  └─────────────────┘                │
-                                │            │                        │
-                                │            v                        │
-                                │  ┌─────────────────┐                │
-                                │  │  pihole.log     │ (monitor)      │
-                                │  └─────────────────┘                │
-                                │            │                        │
-                                │            v                        │
-                                │  ┌─────────────────┐                │
-                                │  │   gravity.db    │ (block rules)  │
-                                │  └─────────────────┘                │
-                                │                                     │
-                                └─────────────────────────────────────┘
+┌──────────────┐                ┌─────────────────────────────────────────────┐
+│              │                │                                             │
+│  deploy.sh   │<──── SSH ────> │  pihole_elapsed_time_trigger.py (daemon)    │
+│              │                │            │                                │
+└──────────────┘                │            v                                │
+                                │  ┌─────────────────┐                        │
+       Browser                  │  │   trigger.db    │<──┐                    │
+┌──────────────┐                │  └─────────────────┘   │                    │
+│              │                │            │           │                    │
+│  Web UI      │<── HTTP:8080 ─>│  trigger_web/app.py ───┘                    │
+│              │                │  (Flask web server)                         │
+└──────────────┘                │            │                                │
+                                │            v                                │
+                                │  ┌─────────────────┐                        │
+                                │  │  pihole.log     │ (monitor)              │
+                                │  └─────────────────┘                        │
+                                │            │                                │
+                                │            v                                │
+                                │  ┌─────────────────┐                        │
+                                │  │   gravity.db    │ (Pi-hole block rules)  │
+                                │  └─────────────────┘                        │
+                                │                                             │
+                                └─────────────────────────────────────────────┘
 ```
 
 ## Files
@@ -339,7 +385,9 @@ Local Machine                    Pi-hole Server
 |------|----------|-------------|
 | `deploy.sh` | Local | Deployment and management script |
 | `pihole_elapsed_time_trigger.py` | Pi-hole: `/home/pi/` | Main daemon script |
-| `pihole-trigger.service` | Pi-hole: `/etc/systemd/system/` | Systemd service file |
+| `pihole-trigger.service` | Pi-hole: `/etc/systemd/system/` | Daemon systemd service |
+| `trigger_web/` | Pi-hole: `/home/pi/trigger_web/` | Web interface Flask app |
+| `trigger-web.service` | Pi-hole: `/etc/systemd/system/` | Web server systemd service |
 | `trigger.db` | Pi-hole: `/home/pi/` | SQLite database for trigger config |
 | `.env` | Local | Environment configuration |
 

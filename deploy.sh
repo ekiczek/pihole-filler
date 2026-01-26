@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Deploy and manage the Pi-hole Elapsed Time Trigger daemon
+# Deploy and manage the Pi-hole Elapsed Time Trigger daemon and web interface
 #
 # Usage:
 #   ./deploy.sh                Deploy script and restart daemon
@@ -14,6 +14,12 @@
 #   ./deploy.sh --remove ID    Remove a trigger
 #   ./deploy.sh --reset ID     Reset a trigger (remove block)
 #   ./deploy.sh --unblock      Remove all active blocks
+#
+# Web Interface:
+#   ./deploy.sh --web-status   Check web server status
+#   ./deploy.sh --web-logs     View web server logs (live)
+#   ./deploy.sh --web-stop     Stop the web server
+#   ./deploy.sh --web-start    Start the web server
 #
 
 set -e
@@ -49,6 +55,14 @@ REMOTE_SCRIPT_PATH="/home/pi/${SCRIPT_NAME}"
 REMOTE_SERVICE_PATH="/etc/systemd/system/${SERVICE_FILE}"
 LOCAL_SCRIPT="${SCRIPT_DIR}/${SCRIPT_NAME}"
 LOCAL_SERVICE="${SCRIPT_DIR}/${SERVICE_FILE}"
+
+# Web interface configuration
+WEB_SERVICE_NAME="trigger-web"
+WEB_SERVICE_FILE="${WEB_SERVICE_NAME}.service"
+REMOTE_WEB_PATH="/home/pi/trigger_web"
+REMOTE_WEB_SERVICE_PATH="/etc/systemd/system/${WEB_SERVICE_FILE}"
+LOCAL_WEB_DIR="${SCRIPT_DIR}/trigger_web"
+LOCAL_WEB_SERVICE="${SCRIPT_DIR}/${WEB_SERVICE_FILE}"
 
 # Colors for output
 RED='\033[0;31m'
@@ -95,11 +109,27 @@ check_local_files() {
     fi
 }
 
+# Check if web local files exist
+check_web_files() {
+    if [[ ! -d "$LOCAL_WEB_DIR" ]]; then
+        log_error "Web directory not found: $LOCAL_WEB_DIR"
+        exit 1
+    fi
+    if [[ ! -f "$LOCAL_WEB_DIR/app.py" ]]; then
+        log_error "Web app not found: $LOCAL_WEB_DIR/app.py"
+        exit 1
+    fi
+    if [[ ! -f "$LOCAL_WEB_SERVICE" ]]; then
+        log_error "Web service file not found: $LOCAL_WEB_SERVICE"
+        exit 1
+    fi
+}
+
 # Deploy the script and service file to the remote host
 deploy_files() {
     check_local_files
 
-    log_info "Deploying files to ${REMOTE_HOST}..."
+    log_info "Deploying daemon files to ${REMOTE_HOST}..."
 
     # Copy the Python script
     log_info "Copying ${SCRIPT_NAME}..."
@@ -119,7 +149,56 @@ deploy_files() {
     log_info "Enabling service to start on boot..."
     remote_sudo "systemctl enable ${SERVICE_NAME}"
 
-    log_info "Deployment complete!"
+    log_info "Daemon deployment complete!"
+}
+
+# Deploy the web interface files to the remote host
+deploy_web() {
+    check_web_files
+
+    log_info "Deploying web interface to ${REMOTE_HOST}..."
+
+    # Create remote directory structure
+    log_info "Creating directory structure..."
+    remote_cmd "mkdir -p ${REMOTE_WEB_PATH}/templates ${REMOTE_WEB_PATH}/static"
+
+    # Copy web app files
+    log_info "Copying web app files..."
+    scp $SSH_OPTS "$LOCAL_WEB_DIR/app.py" "${REMOTE_HOST}:${REMOTE_WEB_PATH}/app.py"
+
+    # Copy templates
+    log_info "Copying templates..."
+    scp $SSH_OPTS "$LOCAL_WEB_DIR/templates/"*.html "${REMOTE_HOST}:${REMOTE_WEB_PATH}/templates/"
+
+    # Copy static files
+    log_info "Copying static files..."
+    scp $SSH_OPTS "$LOCAL_WEB_DIR/static/"* "${REMOTE_HOST}:${REMOTE_WEB_PATH}/static/"
+
+    # Install Flask if not present
+    log_info "Checking Flask installation..."
+    remote_sudo "pip3 show flask > /dev/null 2>&1 || pip3 install flask"
+
+    # Copy the service file to a temp location, then move with sudo
+    log_info "Installing web service..."
+    scp $SSH_OPTS "$LOCAL_WEB_SERVICE" "${REMOTE_HOST}:/tmp/${WEB_SERVICE_FILE}"
+    remote_sudo "mv /tmp/${WEB_SERVICE_FILE} ${REMOTE_WEB_SERVICE_PATH}"
+    remote_sudo "chmod 644 ${REMOTE_WEB_SERVICE_PATH}"
+
+    # Reload systemd
+    log_info "Reloading systemd..."
+    remote_sudo "systemctl daemon-reload"
+
+    # Enable the service to start on boot
+    log_info "Enabling web service to start on boot..."
+    remote_sudo "systemctl enable ${WEB_SERVICE_NAME}"
+
+    log_info "Web interface deployment complete!"
+}
+
+# Deploy everything (daemon + web)
+deploy_all() {
+    deploy_files
+    deploy_web
 }
 
 # Restart the daemon
@@ -161,6 +240,42 @@ show_logs() {
     remote_sudo "journalctl -u ${SERVICE_NAME} -f"
 }
 
+# Web server control functions
+restart_web() {
+    log_info "Restarting ${WEB_SERVICE_NAME} web server..."
+    remote_sudo "systemctl restart ${WEB_SERVICE_NAME}"
+    sleep 2
+    show_web_status
+}
+
+start_web() {
+    log_info "Starting ${WEB_SERVICE_NAME} web server..."
+    remote_sudo "systemctl start ${WEB_SERVICE_NAME}"
+    sleep 2
+    show_web_status
+}
+
+stop_web() {
+    log_info "Stopping ${WEB_SERVICE_NAME} web server..."
+    remote_sudo "systemctl stop ${WEB_SERVICE_NAME}"
+    log_info "Web server stopped"
+}
+
+show_web_status() {
+    echo ""
+    log_info "Web server status:"
+    echo "--------------------------------------------------------------"
+    remote_sudo "systemctl status ${WEB_SERVICE_NAME} --no-pager" || true
+    echo "--------------------------------------------------------------"
+    log_info "Web interface: http://${PIHOLE_HOST}:8080"
+}
+
+show_web_logs() {
+    log_info "Showing logs for ${WEB_SERVICE_NAME} (Ctrl+C to exit)..."
+    echo "--------------------------------------------------------------"
+    remote_sudo "journalctl -u ${WEB_SERVICE_NAME} -f"
+}
+
 # Run a management command (--list, --add, --remove, etc.)
 run_management_cmd() {
     check_local_files
@@ -191,11 +306,17 @@ print_usage() {
     echo "Pi-hole Elapsed Time Trigger - Deployment Script"
     echo ""
     echo "Usage:"
-    echo "  ./deploy.sh                Deploy script and restart daemon"
+    echo "  ./deploy.sh                Deploy everything and restart services"
     echo "  ./deploy.sh --status       Check daemon status"
     echo "  ./deploy.sh --logs         View daemon logs (live)"
     echo "  ./deploy.sh --stop         Stop the daemon"
     echo "  ./deploy.sh --start        Start the daemon (without redeploying)"
+    echo ""
+    echo "Web Interface:"
+    echo "  ./deploy.sh --web-status   Check web server status"
+    echo "  ./deploy.sh --web-logs     View web server logs (live)"
+    echo "  ./deploy.sh --web-stop     Stop the web server"
+    echo "  ./deploy.sh --web-start    Start the web server"
     echo ""
     echo "Trigger Management:"
     echo "  ./deploy.sh --list                       List configured triggers"
@@ -242,14 +363,31 @@ case "${1:-}" in
         start_daemon
         exit 0
         ;;
+    --web-status)
+        show_web_status
+        exit 0
+        ;;
+    --web-logs)
+        show_web_logs
+        exit 0
+        ;;
+    --web-stop)
+        stop_web
+        exit 0
+        ;;
+    --web-start)
+        start_web
+        exit 0
+        ;;
     --list|--add|--edit|--remove|--reset|--unblock)
         run_management_cmd "$@"
         exit $?
         ;;
     "")
-        # Default: deploy and restart
-        deploy_files
+        # Default: deploy everything and restart services
+        deploy_all
         restart_daemon
+        restart_web
         exit 0
         ;;
     *)
