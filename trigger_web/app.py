@@ -35,8 +35,8 @@ app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
 TRIGGER_DB = Path(__file__).parent.parent / "trigger.db"
 GRAVITY_DB = Path("/etc/pihole/gravity.db")
 
-# Daily reset hour (must match the daemon)
-DAILY_RESET_HOUR = 3
+# Default daily reset hour (can be overridden in settings)
+DEFAULT_RESET_HOUR = 3
 
 # =============================================================================
 # DATABASE FUNCTIONS
@@ -79,7 +79,47 @@ def init_trigger_db():
         )
     """
     success, output = run_sqlite(create_table)
+    if not success:
+        return False
+
+    # Create settings table
+    create_settings = """
+        CREATE TABLE IF NOT EXISTS settings (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        )
+    """
+    success, output = run_sqlite(create_settings)
     return success
+
+
+def get_setting(key, default=None):
+    """Get a setting value from the database."""
+    query = f"SELECT value FROM settings WHERE key = '{key}'"
+    success, output = run_sqlite(query)
+    if success and output:
+        return output.strip()
+    return default
+
+
+def set_setting(key, value):
+    """Set a setting value in the database."""
+    # Use INSERT OR REPLACE to handle both insert and update
+    value_escaped = str(value).replace("'", "''")
+    query = f"INSERT OR REPLACE INTO settings (key, value) VALUES ('{key}', '{value_escaped}')"
+    return run_sqlite(query)
+
+
+def get_reset_hour():
+    """Get the configured daily reset hour."""
+    value = get_setting('daily_reset_hour', str(DEFAULT_RESET_HOUR))
+    try:
+        hour = int(value)
+        if 0 <= hour <= 23:
+            return hour
+    except ValueError:
+        pass
+    return DEFAULT_RESET_HOUR
 
 
 def get_all_triggers():
@@ -413,8 +453,9 @@ def format_time(seconds):
 
 def get_next_reset_time():
     """Calculate time until next daily reset."""
+    reset_hour = get_reset_hour()
     now = datetime.now()
-    reset_today = now.replace(hour=DAILY_RESET_HOUR, minute=0, second=0, microsecond=0)
+    reset_today = now.replace(hour=reset_hour, minute=0, second=0, microsecond=0)
 
     if now >= reset_today:
         reset_time = reset_today + timedelta(days=1)
@@ -765,6 +806,35 @@ def reset_all():
         flash(f'Failed to reset triggers: {message}', 'error')
 
     return redirect(url_for('dashboard'))
+
+
+# =============================================================================
+# ROUTES - SETTINGS
+# =============================================================================
+
+@app.route('/settings', methods=['GET', 'POST'])
+@login_required
+def settings():
+    """Settings page."""
+    if request.method == 'POST':
+        # Handle reset hour change
+        reset_hour = request.form.get('reset_hour', '')
+        try:
+            hour = int(reset_hour)
+            if 0 <= hour <= 23:
+                set_setting('daily_reset_hour', str(hour))
+                flash(f'Daily reset time updated to {hour:02d}:00', 'success')
+                # Restart daemon to pick up new setting
+                restart_daemon()
+            else:
+                flash('Invalid hour. Must be between 0 and 23.', 'error')
+        except ValueError:
+            flash('Invalid hour value.', 'error')
+
+        return redirect(url_for('settings'))
+
+    current_hour = get_reset_hour()
+    return render_template('settings.html', reset_hour=current_hour, now=datetime.now())
 
 
 # =============================================================================

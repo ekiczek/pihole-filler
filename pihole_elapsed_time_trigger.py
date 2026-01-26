@@ -58,9 +58,9 @@ TRIGGER_DB = Path(__file__).parent / "trigger.db"
 # Domain list type for regex denylist
 DOMAINLIST_TYPE_REGEX_DENY = 3
 
-# Daily reset hour (24-hour format, local time)
-# All triggered blocks are removed and timers reset at this hour
-DAILY_RESET_HOUR = 3  # 3:00 AM
+# Default daily reset hour (24-hour format, local time)
+# Can be overridden via settings in the database
+DEFAULT_RESET_HOUR = 3  # 3:00 AM
 
 # =============================================================================
 # GLOBAL STATE
@@ -160,6 +160,27 @@ def init_trigger_db():
             print("[DB] Column added")
 
     return True
+
+def get_setting(key, default=None):
+    """Get a setting value from the database."""
+    query = f"SELECT value FROM settings WHERE key = '{key}'"
+    success, output = run_sqlite(query, db_path=TRIGGER_DB)
+    if success and output:
+        return output.strip()
+    return default
+
+
+def get_reset_hour():
+    """Get the configured daily reset hour from the database."""
+    value = get_setting('daily_reset_hour', str(DEFAULT_RESET_HOUR))
+    try:
+        hour = int(value)
+        if 0 <= hour <= 23:
+            return hour
+    except ValueError:
+        pass
+    return DEFAULT_RESET_HOUR
+
 
 def load_triggers():
     """Load all enabled triggers from the database."""
@@ -715,9 +736,10 @@ def check_daily_reset():
 
     now = datetime.now()
     today = now.date()
+    reset_hour = get_reset_hour()
 
     # Check if we're in the reset hour and haven't reset today yet
-    if now.hour == DAILY_RESET_HOUR and last_reset_date != today:
+    if now.hour == reset_hour and last_reset_date != today:
         perform_daily_reset()
         last_reset_date = today
         return True
@@ -954,8 +976,9 @@ def main():
         print(f"      Watching: {', '.join(trigger['trigger_domains'][:3])}{'...' if len(trigger['trigger_domains']) > 3 else ''}")
         print()
 
+    reset_hour = get_reset_hour()
     print(f"Log file: {PIHOLE_LOG}")
-    print(f"Daily reset: {DAILY_RESET_HOUR:02d}:00 local time")
+    print(f"Daily reset: {reset_hour:02d}:00 local time")
     print("=" * 70)
 
     # Clear any previous blocks on startup
