@@ -11,6 +11,7 @@
 #   ./deploy.sh --list         List configured triggers
 #   ./deploy.sh --add ...      Add a new trigger
 #   ./deploy.sh --remove ID    Remove a trigger
+#   ./deploy.sh --reset ID     Reset a trigger (remove block)
 #   ./deploy.sh --unblock      Remove all active blocks
 #
 
@@ -202,6 +203,7 @@ print_usage() {
     echo "  ./deploy.sh --remove ID    Remove a trigger"
     echo "  ./deploy.sh --enable ID    Enable a trigger"
     echo "  ./deploy.sh --disable ID   Disable a trigger"
+    echo "  ./deploy.sh --reset ID     Reset a trigger (remove active block)"
     echo "  ./deploy.sh --unblock      Remove all active blocks"
     echo ""
     echo "Examples:"
@@ -230,7 +232,7 @@ case "${1:-}" in
         start_daemon
         exit 0
         ;;
-    --list|--add|--remove|--enable|--disable|--unblock)
+    --list|--add|--remove|--enable|--disable|--reset|--unblock)
         run_management_cmd "$@"
         exit $?
         ;;

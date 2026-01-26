@@ -12,6 +12,7 @@ Usage:
     sudo python3 pihole_elapsed_time_trigger.py --remove ID  Remove a trigger
     sudo python3 pihole_elapsed_time_trigger.py --enable ID  Enable a trigger
     sudo python3 pihole_elapsed_time_trigger.py --disable ID Disable a trigger
+    sudo python3 pihole_elapsed_time_trigger.py --reset ID   Reset a trigger (remove block)
     sudo python3 pihole_elapsed_time_trigger.py --unblock    Remove all active blocks
 
 Requirements:
@@ -77,7 +78,7 @@ def run_sqlite(query, db_path=GRAVITY_DB):
 
 def init_trigger_db():
     """Initialize the trigger configuration database if it doesn't exist."""
-    # Create table with group_ids (comma-separated) instead of single group_id
+    # Create table with group_ids (comma-separated) and is_triggered flag
     create_table = """
         CREATE TABLE IF NOT EXISTS triggers (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -87,6 +88,7 @@ def init_trigger_db():
             trigger_domains TEXT NOT NULL,
             block_regex TEXT NOT NULL,
             enabled INTEGER DEFAULT 1,
+            is_triggered INTEGER DEFAULT 0,
             created_at TEXT DEFAULT CURRENT_TIMESTAMP
         )
     """
@@ -95,36 +97,49 @@ def init_trigger_db():
         print(f"[DB] Failed to initialize trigger database: {output}")
         return False
 
-    # Migration: rename group_id to group_ids if old schema exists
-    # Check if old column exists
+    # Check current schema for migrations
     check_col = "SELECT sql FROM sqlite_master WHERE type='table' AND name='triggers'"
     success, schema = run_sqlite(check_col, db_path=TRIGGER_DB)
-    if success and 'group_id INTEGER' in schema:
-        print("[DB] Migrating database: group_id -> group_ids...")
-        # SQLite doesn't support RENAME COLUMN in older versions, so we recreate
-        migrate_queries = [
-            "ALTER TABLE triggers RENAME TO triggers_old",
-            """CREATE TABLE triggers (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT NOT NULL,
-                group_ids TEXT NOT NULL,
-                time_limit_seconds INTEGER NOT NULL,
-                trigger_domains TEXT NOT NULL,
-                block_regex TEXT NOT NULL,
-                enabled INTEGER DEFAULT 1,
-                created_at TEXT DEFAULT CURRENT_TIMESTAMP
-            )""",
-            """INSERT INTO triggers (id, name, group_ids, time_limit_seconds, trigger_domains, block_regex, enabled, created_at)
-               SELECT id, name, CAST(group_id AS TEXT), time_limit_seconds, trigger_domains, block_regex, enabled, created_at
-               FROM triggers_old""",
-            "DROP TABLE triggers_old"
-        ]
-        for query in migrate_queries:
-            success, output = run_sqlite(query, db_path=TRIGGER_DB)
+
+    if success and schema:
+        # Migration: rename group_id to group_ids if old schema exists
+        if 'group_id INTEGER' in schema:
+            print("[DB] Migrating database: group_id -> group_ids...")
+            # SQLite doesn't support RENAME COLUMN in older versions, so we recreate
+            migrate_queries = [
+                "ALTER TABLE triggers RENAME TO triggers_old",
+                """CREATE TABLE triggers (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL,
+                    group_ids TEXT NOT NULL,
+                    time_limit_seconds INTEGER NOT NULL,
+                    trigger_domains TEXT NOT NULL,
+                    block_regex TEXT NOT NULL,
+                    enabled INTEGER DEFAULT 1,
+                    is_triggered INTEGER DEFAULT 0,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                )""",
+                """INSERT INTO triggers (id, name, group_ids, time_limit_seconds, trigger_domains, block_regex, enabled, is_triggered, created_at)
+                   SELECT id, name, CAST(group_id AS TEXT), time_limit_seconds, trigger_domains, block_regex, enabled, 0, created_at
+                   FROM triggers_old""",
+                "DROP TABLE triggers_old"
+            ]
+            for query in migrate_queries:
+                success, output = run_sqlite(query, db_path=TRIGGER_DB)
+                if not success:
+                    print(f"[DB] Migration failed: {output}")
+                    return False
+            print("[DB] Migration complete")
+
+        # Migration: add is_triggered column if it doesn't exist
+        elif 'is_triggered' not in schema:
+            print("[DB] Adding is_triggered column...")
+            add_col = "ALTER TABLE triggers ADD COLUMN is_triggered INTEGER DEFAULT 0"
+            success, output = run_sqlite(add_col, db_path=TRIGGER_DB)
             if not success:
-                print(f"[DB] Migration failed: {output}")
+                print(f"[DB] Failed to add is_triggered column: {output}")
                 return False
-        print("[DB] Migration complete")
+            print("[DB] Column added")
 
     return True
 
@@ -158,7 +173,7 @@ def load_triggers():
 
 def list_triggers():
     """List all triggers in the database."""
-    query = "SELECT id, name, group_ids, time_limit_seconds, trigger_domains, enabled FROM triggers ORDER BY id"
+    query = "SELECT id, name, group_ids, time_limit_seconds, trigger_domains, enabled, is_triggered FROM triggers ORDER BY id"
     success, output = run_sqlite(query, db_path=TRIGGER_DB)
 
     if not success:
@@ -171,24 +186,25 @@ def list_triggers():
         return
 
     print("\nConfigured Triggers:")
-    print("=" * 85)
-    print(f"{'ID':<4} {'Name':<20} {'Groups':<10} {'Time':<8} {'Domains':<30} {'Status':<8}")
-    print("-" * 85)
+    print("=" * 100)
+    print(f"{'ID':<4} {'Name':<20} {'Groups':<10} {'Time':<8} {'Domains':<25} {'Status':<10} {'Triggered':<10}")
+    print("-" * 100)
 
     for line in output.split('\n'):
         if not line.strip():
             continue
         parts = line.split('␞')
-        if len(parts) >= 6:
+        if len(parts) >= 7:
             trigger_id = parts[0]
             name = parts[1][:18] + '..' if len(parts[1]) > 20 else parts[1]
             group_ids = parts[2][:8] + '..' if len(parts[2]) > 10 else parts[2]
             time_limit = f"{parts[3]}s"
-            domains = parts[4][:28] + '..' if len(parts[4]) > 30 else parts[4]
+            domains = parts[4][:23] + '..' if len(parts[4]) > 25 else parts[4]
             status = "Enabled" if parts[5] == '1' else "Disabled"
-            print(f"{trigger_id:<4} {name:<20} {group_ids:<10} {time_limit:<8} {domains:<30} {status:<8}")
+            triggered = "BLOCKED" if parts[6] == '1' else "-"
+            print(f"{trigger_id:<4} {name:<20} {group_ids:<10} {time_limit:<8} {domains:<25} {status:<10} {triggered:<10}")
 
-    print("=" * 85)
+    print("=" * 100)
 
 def add_trigger_cli(name, group_ids, time_limit, trigger_domains, block_regex):
     """Add a new trigger via command-line arguments."""
@@ -237,6 +253,7 @@ def add_trigger_cli(name, group_ids, time_limit, trigger_domains, block_regex):
     if success:
         print(f"Trigger '{name}' added successfully!")
         print(f"  Groups: {group_ids_normalized}")
+        restart_daemon_service()
         return True
     else:
         print(f"Error: Failed to add trigger: {output}")
@@ -262,24 +279,43 @@ def add_trigger():
 
 def remove_trigger(trigger_id):
     """Remove a trigger by ID."""
-    # First check if it exists
-    check_query = f"SELECT name FROM triggers WHERE id = {trigger_id}"
+    # First check if it exists and get its details for cleanup
+    check_query = f"SELECT id, name, group_ids, time_limit_seconds, trigger_domains, block_regex FROM triggers WHERE id = {trigger_id}"
     success, output = run_sqlite(check_query, db_path=TRIGGER_DB)
 
     if not success or not output:
         print(f"Error: Trigger with ID {trigger_id} not found")
         return False
 
-    name = output.strip()
+    parts = output.split('␞')
+    name = parts[1] if len(parts) > 1 else "Unknown"
+
+    # Build trigger dict to check for existing block
+    if len(parts) >= 6:
+        trigger = {
+            'id': int(parts[0]),
+            'name': parts[1],
+            'group_ids': [int(g.strip()) for g in parts[2].split(',')],
+            'time_limit_seconds': int(parts[3]),
+            'trigger_domains': [d.strip() for d in parts[4].split(',')],
+            'block_regex': parts[5],
+        }
+        # Remove any active block for this trigger
+        block_id = get_existing_block(trigger)
+        if block_id:
+            print(f"Removing active block rule (ID: {block_id})...")
+            remove_block(trigger)
+            reload_pihole()
 
     query = f"DELETE FROM triggers WHERE id = {trigger_id}"
-    success, output = run_sqlite(query, db_path=TRIGGER_DB)
+    success, _ = run_sqlite(query, db_path=TRIGGER_DB)
 
     if success:
         print(f"Trigger '{name}' (ID: {trigger_id}) removed successfully!")
+        restart_daemon_service()
         return True
     else:
-        print(f"Error: Failed to remove trigger: {output}")
+        print(f"Error: Failed to remove trigger")
         return False
 
 def set_trigger_enabled(trigger_id, enabled):
@@ -295,15 +331,87 @@ def set_trigger_enabled(trigger_id, enabled):
     name = output.strip()
 
     query = f"UPDATE triggers SET enabled = {1 if enabled else 0} WHERE id = {trigger_id}"
-    success, output = run_sqlite(query, db_path=TRIGGER_DB)
+    success, _ = run_sqlite(query, db_path=TRIGGER_DB)
 
     if success:
         status = "enabled" if enabled else "disabled"
         print(f"Trigger '{name}' (ID: {trigger_id}) {status}!")
+        restart_daemon_service()
         return True
     else:
-        print(f"Error: Failed to update trigger: {output}")
+        print(f"Error: Failed to update trigger")
         return False
+
+def set_trigger_active(trigger_id, is_triggered):
+    """Set the is_triggered flag for a trigger."""
+    query = f"UPDATE triggers SET is_triggered = {1 if is_triggered else 0} WHERE id = {trigger_id}"
+    success, output = run_sqlite(query, db_path=TRIGGER_DB)
+    return success
+
+def reset_trigger(trigger_id, restart_daemon=True):
+    """Reset a trigger: remove active block and clear timer state."""
+    # First get the trigger details
+    query = f"SELECT id, name, group_ids, time_limit_seconds, trigger_domains, block_regex, is_triggered FROM triggers WHERE id = {trigger_id}"
+    success, output = run_sqlite(query, db_path=TRIGGER_DB)
+
+    if not success or not output:
+        print(f"Error: Trigger with ID {trigger_id} not found")
+        return False
+
+    parts = output.split('␞')
+    if len(parts) < 7:
+        print(f"Error: Invalid trigger data")
+        return False
+
+    trigger = {
+        'id': int(parts[0]),
+        'name': parts[1],
+        'group_ids': [int(g.strip()) for g in parts[2].split(',')],
+        'time_limit_seconds': int(parts[3]),
+        'trigger_domains': [d.strip() for d in parts[4].split(',')],
+        'block_regex': parts[5],
+    }
+    is_triggered = parts[6] == '1'
+
+    print(f"Resetting trigger '{trigger['name']}' (ID: {trigger_id})...")
+
+    # Check if there's an active block rule in Pi-hole
+    block_removed = False
+    domain_id = get_existing_block(trigger)
+    if domain_id:
+        print(f"  Removing block rule (ID: {domain_id})...")
+        remove_block(trigger)
+        block_removed = True
+    elif is_triggered:
+        print(f"  No block rule found in Pi-hole, clearing triggered flag...")
+        set_trigger_active(trigger_id, False)
+    else:
+        print(f"  No active block found")
+
+    if block_removed:
+        reload_pihole()
+
+    print(f"Trigger '{trigger['name']}' has been reset.")
+
+    # Restart the daemon to clear in-memory state
+    if restart_daemon:
+        restart_daemon_service()
+
+    return True
+
+def restart_daemon_service():
+    """Restart the pihole-trigger daemon to reload state."""
+    print("Restarting daemon to reload state...")
+    result = subprocess.run(
+        ["systemctl", "restart", "pihole-trigger"],
+        capture_output=True,
+        text=True
+    )
+    if result.returncode == 0:
+        print("Daemon restarted successfully")
+    else:
+        print(f"Note: Could not restart daemon: {result.stderr.strip()}")
+        print("You may need to restart it manually: sudo systemctl restart pihole-trigger")
 
 def get_block_comment(trigger):
     """Generate a unique block comment for a trigger."""
@@ -365,6 +473,10 @@ def add_block(trigger):
 
     group_list = ','.join(str(g) for g in trigger['group_ids'])
     print(f"[{trigger['name']}] Assigned rule to group(s) {group_list}")
+
+    # Mark trigger as active in database
+    set_trigger_active(trigger['id'], True)
+
     return True
 
 def enable_block(trigger, domain_id):
@@ -384,6 +496,8 @@ def remove_block(trigger):
     domain_id = get_existing_block(trigger)
 
     if not domain_id:
+        # No block exists, but ensure is_triggered is false
+        set_trigger_active(trigger['id'], False)
         return False
 
     print(f"[{trigger['name']}] Removing rule (ID: {domain_id})...")
@@ -398,6 +512,10 @@ def remove_block(trigger):
         return False
 
     print(f"[{trigger['name']}] Rule removed")
+
+    # Mark trigger as inactive in database
+    set_trigger_active(trigger['id'], False)
+
     return True
 
 def remove_all_blocks():
@@ -411,9 +529,13 @@ def remove_all_blocks():
 
     if not output:
         print("No active blocks found.")
+        # Clear all is_triggered flags just in case
+        clear_query = "UPDATE triggers SET is_triggered = 0 WHERE is_triggered = 1"
+        run_sqlite(clear_query, db_path=TRIGGER_DB)
         return True
 
     removed = 0
+    trigger_ids_cleared = []
     for line in output.split('\n'):
         if not line.strip():
             continue
@@ -422,15 +544,26 @@ def remove_all_blocks():
             domain_id = parts[0]
             comment = parts[1]
 
+            # Extract trigger ID from comment (format: "Time trigger [ID] - Name")
+            match = re.search(r'Time trigger \[(\d+)\]', comment)
+            if match:
+                trigger_ids_cleared.append(int(match.group(1)))
+
             delete_query = f"DELETE FROM domainlist WHERE id = {domain_id}"
             success, _ = run_sqlite(delete_query)
             if success:
                 print(f"Removed: {comment}")
                 removed += 1
 
+    # Clear is_triggered flags for all removed triggers
+    for trigger_id in trigger_ids_cleared:
+        set_trigger_active(trigger_id, False)
+
     if removed > 0:
         reload_pihole()
         print(f"\nRemoved {removed} block(s).")
+        # Restart daemon to clear in-memory state
+        restart_daemon_service()
 
     return True
 
@@ -592,7 +725,7 @@ def check_timers_expired():
                 group_list = ','.join(str(g) for g in trigger['group_ids'])
                 print(f"[{trigger['name']}] Domains are now BLOCKED for group(s) {group_list}")
 
-def signal_handler(signum, frame):
+def signal_handler(_signum, _frame):
     """Handle shutdown signals gracefully."""
     global running
     print("\n[Shutdown] Received signal, shutting down...")
@@ -625,8 +758,7 @@ def main():
     triggers = load_triggers()
     if not triggers:
         print("No enabled triggers found.")
-        print("Use --add to create a trigger, or --list to see all triggers.")
-        sys.exit(1)
+        print("Daemon will wait for triggers to be added. Use --add to create one.")
 
     # Initialize state for each trigger
     for trigger in triggers:
@@ -719,6 +851,7 @@ def print_help():
     print("  sudo python3 pihole_elapsed_time_trigger.py --remove ID  Remove a trigger")
     print("  sudo python3 pihole_elapsed_time_trigger.py --enable ID  Enable a trigger")
     print("  sudo python3 pihole_elapsed_time_trigger.py --disable ID Disable a trigger")
+    print("  sudo python3 pihole_elapsed_time_trigger.py --reset ID   Reset a trigger (remove active block)")
     print("  sudo python3 pihole_elapsed_time_trigger.py --unblock    Remove all active blocks")
     print("  sudo python3 pihole_elapsed_time_trigger.py --help       Show this help")
     print()
@@ -804,6 +937,20 @@ if __name__ == "__main__":
                 print("Error: ID must be a number")
                 sys.exit(1)
             if set_trigger_enabled(trigger_id, False):
+                sys.exit(0)
+            sys.exit(1)
+
+        elif cmd == "--reset":
+            if len(sys.argv) < 3:
+                print("Error: --reset requires a trigger ID")
+                print("Usage: --reset ID")
+                sys.exit(1)
+            try:
+                trigger_id = int(sys.argv[2])
+            except ValueError:
+                print("Error: ID must be a number")
+                sys.exit(1)
+            if reset_trigger(trigger_id):
                 sys.exit(0)
             sys.exit(1)
 
