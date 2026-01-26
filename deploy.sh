@@ -10,6 +10,7 @@
 #   ./deploy.sh --start        Start the daemon
 #   ./deploy.sh --list         List configured triggers
 #   ./deploy.sh --add ...      Add a new trigger
+#   ./deploy.sh --edit ID ...  Edit a trigger
 #   ./deploy.sh --remove ID    Remove a trigger
 #   ./deploy.sh --reset ID     Reset a trigger (remove block)
 #   ./deploy.sh --unblock      Remove all active blocks
@@ -197,17 +198,26 @@ print_usage() {
     echo "  ./deploy.sh --start        Start the daemon (without redeploying)"
     echo ""
     echo "Trigger Management:"
-    echo "  ./deploy.sh --list         List configured triggers"
-    echo "  ./deploy.sh --add NAME GROUP_IDS TIME_LIMIT DOMAINS REGEX"
-    echo "                             Add a new trigger"
-    echo "  ./deploy.sh --remove ID    Remove a trigger"
-    echo "  ./deploy.sh --enable ID    Enable a trigger"
-    echo "  ./deploy.sh --disable ID   Disable a trigger"
-    echo "  ./deploy.sh --reset ID     Reset a trigger (remove active block)"
-    echo "  ./deploy.sh --unblock      Remove all active blocks"
+    echo "  ./deploy.sh --list                       List configured triggers"
+    echo "  ./deploy.sh --add [OPTIONS]              Add a new trigger"
+    echo "  ./deploy.sh --edit ID [OPTIONS]          Edit a trigger"
+    echo "  ./deploy.sh --remove ID                  Remove a trigger"
+    echo "  ./deploy.sh --reset ID                   Reset a trigger (remove active block)"
+    echo "  ./deploy.sh --unblock                    Remove all active blocks"
+    echo ""
+    echo "Trigger field options (for --add and --edit):"
+    echo "  -n, --name NAME        Trigger name"
+    echo "  -g, --groups IDS       Pi-hole group IDs (comma-separated)"
+    echo "  -t, --time SECONDS     Time limit in seconds"
+    echo "  -d, --domains DOMAINS  Trigger domains (comma-separated)"
+    echo "  -r, --regex PATTERN    Block regex pattern"
+    echo "  --enable               Enable the trigger"
+    echo "  --disable              Disable the trigger"
     echo ""
     echo "Examples:"
-    echo "  ./deploy.sh --add 'YouTube Limit' '2,3' 3600 'youtube,googlevideo.com' 'youtube|googlevideo\\.com'"
+    echo "  ./deploy.sh --add -n 'YouTube' -g 2,3 -t 3600 -d 'youtube,googlevideo.com' -r 'youtube|googlevideo\\.com'"
+    echo "  ./deploy.sh --edit 1 -t 7200             Change time limit for trigger 1"
+    echo "  ./deploy.sh --edit 1 --disable           Disable trigger 1"
 }
 
 # Main logic
@@ -232,7 +242,7 @@ case "${1:-}" in
         start_daemon
         exit 0
         ;;
-    --list|--add|--remove|--enable|--disable|--reset|--unblock)
+    --list|--add|--edit|--remove|--reset|--unblock)
         run_management_cmd "$@"
         exit $?
         ;;

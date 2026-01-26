@@ -6,14 +6,27 @@ Monitors Pi-hole DNS queries and blocks specified domains for device groups
 after a configurable time period from first access. Supports multiple triggers.
 
 Usage:
-    sudo python3 pihole_elapsed_time_trigger.py              Run all enabled triggers
-    sudo python3 pihole_elapsed_time_trigger.py --list       List all triggers
-    sudo python3 pihole_elapsed_time_trigger.py --add        Add a new trigger
-    sudo python3 pihole_elapsed_time_trigger.py --remove ID  Remove a trigger
-    sudo python3 pihole_elapsed_time_trigger.py --enable ID  Enable a trigger
-    sudo python3 pihole_elapsed_time_trigger.py --disable ID Disable a trigger
-    sudo python3 pihole_elapsed_time_trigger.py --reset ID   Reset a trigger (remove block)
-    sudo python3 pihole_elapsed_time_trigger.py --unblock    Remove all active blocks
+    sudo python3 pihole_elapsed_time_trigger.py                    Run the daemon
+    sudo python3 pihole_elapsed_time_trigger.py --list             List all triggers
+    sudo python3 pihole_elapsed_time_trigger.py --add [OPTIONS]    Add a new trigger
+    sudo python3 pihole_elapsed_time_trigger.py --edit ID [OPTS]   Edit a trigger
+    sudo python3 pihole_elapsed_time_trigger.py --remove ID        Remove a trigger
+    sudo python3 pihole_elapsed_time_trigger.py --reset ID         Reset trigger (remove block)
+    sudo python3 pihole_elapsed_time_trigger.py --unblock          Remove all active blocks
+
+Trigger field options (for --add and --edit):
+    -n, --name NAME        Trigger name
+    -g, --groups IDS       Pi-hole group IDs (comma-separated, e.g., "2,3")
+    -t, --time SECONDS     Time limit in seconds
+    -d, --domains DOMAINS  Trigger domains (comma-separated)
+    -r, --regex PATTERN    Block regex pattern
+    --enable               Enable the trigger
+    --disable              Disable the trigger
+
+Examples:
+    --add -n 'YouTube' -g 2,3 -t 3600 -d 'youtube,youtu.be,googlevideo.com,ytimg.com' -r 'youtube|(^|\.)youtu\.be$|(^|\.)googlevideo\.com$|(^|\.)ytimg\.com$'
+    --edit 1 -t 7200                    Change time limit for trigger 1
+    --edit 1 --disable                  Disable trigger 1
 
 Requirements:
     - Pi-hole v6+
@@ -318,24 +331,98 @@ def remove_trigger(trigger_id):
         print(f"Error: Failed to remove trigger")
         return False
 
-def set_trigger_enabled(trigger_id, enabled):
-    """Enable or disable a trigger."""
-    # First check if it exists
-    check_query = f"SELECT name FROM triggers WHERE id = {trigger_id}"
-    success, output = run_sqlite(check_query, db_path=TRIGGER_DB)
+def edit_trigger(trigger_id, name=None, group_ids=None, time_limit=None,
+                 trigger_domains=None, block_regex=None, enabled=None):
+    """Edit a trigger's fields. Only specified fields are updated."""
+    # First get current trigger data
+    query = f"SELECT id, name, group_ids, time_limit_seconds, trigger_domains, block_regex, enabled, is_triggered FROM triggers WHERE id = {trigger_id}"
+    success, output = run_sqlite(query, db_path=TRIGGER_DB)
 
     if not success or not output:
         print(f"Error: Trigger with ID {trigger_id} not found")
         return False
 
-    name = output.strip()
+    parts = output.split('␞')
+    if len(parts) < 8:
+        print(f"Error: Invalid trigger data")
+        return False
 
-    query = f"UPDATE triggers SET enabled = {1 if enabled else 0} WHERE id = {trigger_id}"
-    success, _ = run_sqlite(query, db_path=TRIGGER_DB)
+    current = {
+        'id': int(parts[0]),
+        'name': parts[1],
+        'group_ids': parts[2],
+        'time_limit_seconds': int(parts[3]),
+        'trigger_domains': parts[4],
+        'block_regex': parts[5],
+        'enabled': parts[6] == '1',
+        'is_triggered': parts[7] == '1',
+    }
+
+    # Check if trigger has an active block that needs to be removed
+    if current['is_triggered']:
+        trigger_for_block = {
+            'id': current['id'],
+            'name': current['name'],
+            'group_ids': [int(g.strip()) for g in current['group_ids'].split(',')],
+            'block_regex': current['block_regex'],
+        }
+        print(f"Removing active block before editing...")
+        block_id = get_existing_block(trigger_for_block)
+        if block_id:
+            remove_block(trigger_for_block)
+            reload_pihole()
+
+    # Build update query with only changed fields
+    updates = []
+    if name is not None:
+        updates.append(f"name = '{name.replace(chr(39), chr(39)+chr(39))}'")
+    if group_ids is not None:
+        # Validate and normalize group IDs
+        try:
+            group_id_list = [int(g.strip()) for g in group_ids.split(',')]
+            normalized = ','.join(str(g) for g in group_id_list)
+            updates.append(f"group_ids = '{normalized}'")
+        except ValueError:
+            print("Error: Group IDs must be comma-separated numbers")
+            return False
+    if time_limit is not None:
+        try:
+            time_val = int(time_limit)
+            updates.append(f"time_limit_seconds = {time_val}")
+        except ValueError:
+            print("Error: Time limit must be a number")
+            return False
+    if trigger_domains is not None:
+        updates.append(f"trigger_domains = '{trigger_domains.replace(chr(39), chr(39)+chr(39))}'")
+    if block_regex is not None:
+        updates.append(f"block_regex = '{block_regex.replace(chr(39), chr(39)+chr(39))}'")
+    if enabled is not None:
+        updates.append(f"enabled = {1 if enabled else 0}")
+        # Clear is_triggered if disabling
+        if not enabled:
+            updates.append("is_triggered = 0")
+
+    if not updates:
+        print("No changes specified")
+        return False
+
+    update_query = f"UPDATE triggers SET {', '.join(updates)} WHERE id = {trigger_id}"
+    success, _ = run_sqlite(update_query, db_path=TRIGGER_DB)
 
     if success:
-        status = "enabled" if enabled else "disabled"
-        print(f"Trigger '{name}' (ID: {trigger_id}) {status}!")
+        print(f"Trigger '{current['name']}' (ID: {trigger_id}) updated!")
+        if name:
+            print(f"  Name: {name}")
+        if group_ids:
+            print(f"  Groups: {group_ids}")
+        if time_limit:
+            print(f"  Time limit: {time_limit}s")
+        if trigger_domains:
+            print(f"  Domains: {trigger_domains}")
+        if block_regex:
+            print(f"  Regex: {block_regex}")
+        if enabled is not None:
+            print(f"  Enabled: {enabled}")
         restart_daemon_service()
         return True
     else:
@@ -840,37 +927,60 @@ def main():
             state = trigger_states[trigger['id']]
             print(f"[{trigger['name']}] Blocked: {state['is_blocked']}")
 
-def print_help():
-    """Print help message."""
-    print("Usage:")
-    print("  sudo python3 pihole_elapsed_time_trigger.py              Run all enabled triggers")
-    print("  sudo python3 pihole_elapsed_time_trigger.py --list       List all triggers")
-    print("  sudo python3 pihole_elapsed_time_trigger.py --add        Add a new trigger (interactive)")
-    print("  sudo python3 pihole_elapsed_time_trigger.py --add NAME GROUP_IDS TIME_LIMIT DOMAINS REGEX")
-    print("                                                           Add a trigger (non-interactive)")
-    print("  sudo python3 pihole_elapsed_time_trigger.py --remove ID  Remove a trigger")
-    print("  sudo python3 pihole_elapsed_time_trigger.py --enable ID  Enable a trigger")
-    print("  sudo python3 pihole_elapsed_time_trigger.py --disable ID Disable a trigger")
-    print("  sudo python3 pihole_elapsed_time_trigger.py --reset ID   Reset a trigger (remove active block)")
-    print("  sudo python3 pihole_elapsed_time_trigger.py --unblock    Remove all active blocks")
-    print("  sudo python3 pihole_elapsed_time_trigger.py --help       Show this help")
-    print()
-    print("GROUP_IDS can be a single group (e.g., '2') or multiple groups (e.g., '2,3,4')")
-    print()
-    print("Examples:")
-    print("  --add 'YouTube Limit' 2 3600 'youtube,googlevideo.com' 'youtube|googlevideo\\.com'")
-    print("  --add 'YouTube Limit' '2,3' 3600 'youtube,googlevideo.com' 'youtube|googlevideo\\.com'")
+def build_argument_parser():
+    """Build the argument parser for CLI commands."""
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description='Pi-hole v6 Elapsed Time Trigger - Monitor DNS queries and block domains after time limits.',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  %(prog)s                                          Run the daemon
+  %(prog)s --list                                   List all triggers
+  %(prog)s --add -n 'YouTube' -g 2,3 -t 3600 -d 'youtube,googlevideo.com' -r 'youtube|googlevideo\\.com'
+  %(prog)s --edit 1 -t 7200                         Change time limit for trigger 1
+  %(prog)s --edit 1 --disable                       Disable trigger 1
+  %(prog)s --edit 1 --enable                        Enable trigger 1
+  %(prog)s --remove 1                               Remove trigger 1
+  %(prog)s --reset 1                                Reset trigger 1 (remove active block)
+  %(prog)s --unblock                                Remove all active blocks
+"""
+    )
+
+    # Mutually exclusive command group
+    cmd_group = parser.add_mutually_exclusive_group()
+    cmd_group.add_argument('--list', action='store_true', help='List all triggers')
+    cmd_group.add_argument('--add', action='store_true', help='Add a new trigger')
+    cmd_group.add_argument('--edit', type=int, metavar='ID', help='Edit trigger with specified ID')
+    cmd_group.add_argument('--remove', type=int, metavar='ID', help='Remove trigger with specified ID')
+    cmd_group.add_argument('--reset', type=int, metavar='ID', help='Reset trigger (remove active block)')
+    cmd_group.add_argument('--unblock', action='store_true', help='Remove all active blocks')
+
+    # Trigger field options (used with --add or --edit)
+    field_group = parser.add_argument_group('trigger fields', 'Options for --add and --edit commands')
+    field_group.add_argument('-n', '--name', type=str, help='Trigger name')
+    field_group.add_argument('-g', '--groups', type=str, help='Pi-hole group IDs (comma-separated, e.g., "2,3")')
+    field_group.add_argument('-t', '--time', type=int, help='Time limit in seconds')
+    field_group.add_argument('-d', '--domains', type=str, help='Trigger domains (comma-separated)')
+    field_group.add_argument('-r', '--regex', type=str, help='Block regex pattern')
+
+    # Enable/disable (used with --edit)
+    enable_group = parser.add_mutually_exclusive_group()
+    enable_group.add_argument('--enable', action='store_true', help='Enable the trigger')
+    enable_group.add_argument('--disable', action='store_true', help='Disable the trigger')
+
+    return parser
 
 if __name__ == "__main__":
-    # Initialize database for management commands (doesn't require root for some)
-    if len(sys.argv) > 1:
-        cmd = sys.argv[1]
+    parser = build_argument_parser()
+    args = parser.parse_args()
 
-        if cmd == "--help":
-            print_help()
-            sys.exit(0)
+    # Check if any command was specified
+    is_command = args.list or args.add or args.edit or args.remove or args.reset or args.unblock
 
-        # These commands need root
+    if is_command:
+        # Commands need root
         if os.geteuid() != 0:
             print("Error: Must run as root (sudo)")
             sys.exit(1)
@@ -879,89 +989,57 @@ if __name__ == "__main__":
         if not init_trigger_db():
             sys.exit(1)
 
-        if cmd == "--list":
+        if args.list:
             list_triggers()
             sys.exit(0)
 
-        elif cmd == "--add":
-            if len(sys.argv) == 2:
+        elif args.add:
+            # Check if we have all required fields
+            if args.name and args.groups and args.time and args.domains and args.regex:
+                if add_trigger_cli(args.name, args.groups, str(args.time), args.domains, args.regex):
+                    sys.exit(0)
+                sys.exit(1)
+            else:
                 # Interactive mode
                 if add_trigger():
                     sys.exit(0)
-            elif len(sys.argv) == 7:
-                # Non-interactive mode: --add NAME GROUP_ID TIME_LIMIT DOMAINS REGEX
-                if add_trigger_cli(sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5], sys.argv[6]):
-                    sys.exit(0)
-            else:
-                print("Error: --add requires either no arguments (interactive) or 5 arguments:")
-                print("  --add NAME GROUP_ID TIME_LIMIT DOMAINS REGEX")
-                print()
-                print("Example:")
-                print("  --add 'YouTube Limit' 2 3600 'youtube,googlevideo.com' 'youtube|googlevideo\\.com'")
-            sys.exit(1)
+                sys.exit(1)
 
-        elif cmd == "--remove":
-            if len(sys.argv) < 3:
-                print("Error: --remove requires a trigger ID")
-                print("Usage: --remove ID")
-                sys.exit(1)
-            try:
-                trigger_id = int(sys.argv[2])
-            except ValueError:
-                print("Error: ID must be a number")
-                sys.exit(1)
-            if remove_trigger(trigger_id):
+        elif args.edit is not None:
+            # Determine enabled state
+            enabled = None
+            if args.enable:
+                enabled = True
+            elif args.disable:
+                enabled = False
+
+            if edit_trigger(
+                args.edit,
+                name=args.name,
+                group_ids=args.groups,
+                time_limit=args.time,
+                trigger_domains=args.domains,
+                block_regex=args.regex,
+                enabled=enabled
+            ):
                 sys.exit(0)
             sys.exit(1)
 
-        elif cmd == "--enable":
-            if len(sys.argv) < 3:
-                print("Error: --enable requires a trigger ID")
-                sys.exit(1)
-            try:
-                trigger_id = int(sys.argv[2])
-            except ValueError:
-                print("Error: ID must be a number")
-                sys.exit(1)
-            if set_trigger_enabled(trigger_id, True):
+        elif args.remove is not None:
+            if remove_trigger(args.remove):
                 sys.exit(0)
             sys.exit(1)
 
-        elif cmd == "--disable":
-            if len(sys.argv) < 3:
-                print("Error: --disable requires a trigger ID")
-                sys.exit(1)
-            try:
-                trigger_id = int(sys.argv[2])
-            except ValueError:
-                print("Error: ID must be a number")
-                sys.exit(1)
-            if set_trigger_enabled(trigger_id, False):
+        elif args.reset is not None:
+            if reset_trigger(args.reset):
                 sys.exit(0)
             sys.exit(1)
 
-        elif cmd == "--reset":
-            if len(sys.argv) < 3:
-                print("Error: --reset requires a trigger ID")
-                print("Usage: --reset ID")
-                sys.exit(1)
-            try:
-                trigger_id = int(sys.argv[2])
-            except ValueError:
-                print("Error: ID must be a number")
-                sys.exit(1)
-            if reset_trigger(trigger_id):
-                sys.exit(0)
-            sys.exit(1)
-
-        elif cmd == "--unblock":
+        elif args.unblock:
             print("Removing all blocks...")
             remove_all_blocks()
             sys.exit(0)
 
-        else:
-            print(f"Unknown option: {cmd}")
-            print_help()
-            sys.exit(1)
-
-    main()
+    else:
+        # No command specified - run the daemon
+        main()
