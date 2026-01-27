@@ -343,8 +343,11 @@ list_app_presets() {
     echo "  instagram  - Instagram"
 }
 
-# Expand -a/--app option to -d and -r arguments
-expand_app_args() {
+# Run a management command (--list, --add, --remove, etc.)
+run_management_cmd() {
+    check_local_files
+
+    # Expand -a/--app options to -d and -r inline
     local args=("$@")
     local expanded_args=()
     local i=0
@@ -352,7 +355,7 @@ expand_app_args() {
     while [[ $i -lt ${#args[@]} ]]; do
         local arg="${args[$i]}"
         if [[ "$arg" == "-a" || "$arg" == "--app" ]]; then
-            ((i++))
+            ((++i))
             if [[ $i -lt ${#args[@]} ]]; then
                 local app_name="${args[$i]}"
                 local preset=$(get_app_preset "$app_name")
@@ -372,21 +375,8 @@ expand_app_args() {
         else
             expanded_args+=("$arg")
         fi
-        ((i++))
+        ((++i))
     done
-
-    printf '%s\n' "${expanded_args[@]}"
-}
-
-# Run a management command (--list, --add, --remove, etc.)
-run_management_cmd() {
-    check_local_files
-
-    # Expand -a/--app options to -d and -r
-    local expanded_args=()
-    while IFS= read -r line; do
-        expanded_args+=("$line")
-    done < <(expand_app_args "$@")
 
     # Build properly quoted arguments for remote shell
     local SCRIPT_ARGS=""
