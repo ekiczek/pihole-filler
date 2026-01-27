@@ -201,6 +201,37 @@ deploy_all() {
     deploy_web
 }
 
+# Clean previous installation
+clean() {
+    log_info "Cleaning previous installation from ${REMOTE_HOST}..."
+
+    # Stop services if running
+    log_info "Stopping services..."
+    remote_sudo "systemctl stop ${SERVICE_NAME} 2>/dev/null || true"
+    remote_sudo "systemctl stop ${WEB_SERVICE_NAME} 2>/dev/null || true"
+
+    # Disable services
+    log_info "Disabling services..."
+    remote_sudo "systemctl disable ${SERVICE_NAME} 2>/dev/null || true"
+    remote_sudo "systemctl disable ${WEB_SERVICE_NAME} 2>/dev/null || true"
+
+    # Remove service files
+    log_info "Removing service files..."
+    remote_sudo "rm -f ${REMOTE_SERVICE_PATH}"
+    remote_sudo "rm -f ${REMOTE_WEB_SERVICE_PATH}"
+
+    # Remove script and web directory
+    log_info "Removing application files..."
+    remote_cmd "rm -f ${REMOTE_SCRIPT_PATH}"
+    remote_cmd "rm -rf ${REMOTE_WEB_PATH}"
+
+    # Reload systemd
+    log_info "Reloading systemd..."
+    remote_sudo "systemctl daemon-reload"
+
+    log_info "Clean complete!"
+}
+
 # Restart the daemon
 restart_daemon() {
     log_info "Restarting ${SERVICE_NAME} daemon..."
@@ -306,7 +337,10 @@ print_usage() {
     echo "Pi-hole Elapsed Time Trigger - Deployment Script"
     echo ""
     echo "Usage:"
-    echo "  ./deploy.sh                Deploy everything and restart services"
+    echo "  ./deploy.sh                Deploy everything and restart services (same as --all)"
+    echo "  ./deploy.sh --all          Deploy daemon + web interface, restart both services"
+    echo "  ./deploy.sh --cli-only     Deploy daemon only (no web interface), restart daemon"
+    echo "  ./deploy.sh --clean        Remove previous installation (stop/disable services, remove files)"
     echo "  ./deploy.sh --status       Check daemon status"
     echo "  ./deploy.sh --logs         View daemon logs (live)"
     echo "  ./deploy.sh --stop         Stop the daemon"
@@ -377,6 +411,21 @@ case "${1:-}" in
         ;;
     --web-start)
         start_web
+        exit 0
+        ;;
+    --clean)
+        clean
+        exit 0
+        ;;
+    --cli-only)
+        deploy_files
+        restart_daemon
+        exit 0
+        ;;
+    --all)
+        deploy_all
+        restart_daemon
+        restart_web
         exit 0
         ;;
     --list|--add|--edit|--remove|--reset|--unblock)
