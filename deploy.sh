@@ -135,9 +135,9 @@ deploy_files() {
     log_info "Copying ${SCRIPT_NAME}..."
     scp $SSH_OPTS "$LOCAL_SCRIPT" "${REMOTE_HOST}:${REMOTE_SCRIPT_PATH}"
 
-    # Copy the service file to a temp location, then move with sudo
+    # Copy the service file to a temp location (with placeholder substitution), then move with sudo
     log_info "Installing systemd service..."
-    scp $SSH_OPTS "$LOCAL_SERVICE" "${REMOTE_HOST}:/tmp/${SERVICE_FILE}"
+    sed "s/__PIHOLE_USER__/${PIHOLE_USER}/g" "$LOCAL_SERVICE" | ssh $SSH_OPTS "$REMOTE_HOST" "cat > /tmp/${SERVICE_FILE}"
     remote_sudo "mv /tmp/${SERVICE_FILE} ${REMOTE_SERVICE_PATH}"
     remote_sudo "chmod 644 ${REMOTE_SERVICE_PATH}"
 
@@ -178,9 +178,9 @@ deploy_web() {
     log_info "Checking Flask installation..."
     remote_sudo "pip3 show flask > /dev/null 2>&1 || pip3 install flask"
 
-    # Copy the service file to a temp location, then move with sudo
+    # Copy the service file to a temp location (with placeholder substitution), then move with sudo
     log_info "Installing web service..."
-    scp $SSH_OPTS "$LOCAL_WEB_SERVICE" "${REMOTE_HOST}:/tmp/${WEB_SERVICE_FILE}"
+    sed "s/__PIHOLE_USER__/${PIHOLE_USER}/g" "$LOCAL_WEB_SERVICE" | ssh $SSH_OPTS "$REMOTE_HOST" "cat > /tmp/${WEB_SERVICE_FILE}"
     remote_sudo "mv /tmp/${WEB_SERVICE_FILE} ${REMOTE_WEB_SERVICE_PATH}"
     remote_sudo "chmod 644 ${REMOTE_WEB_SERVICE_PATH}"
 

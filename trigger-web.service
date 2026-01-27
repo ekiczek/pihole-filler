@@ -6,8 +6,8 @@ Wants=pihole-FTL.service
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/python3 -u /home/pi/trigger_web/app.py
-WorkingDirectory=/home/pi/trigger_web
+ExecStart=/usr/bin/python3 -u /home/__PIHOLE_USER__/trigger_web/app.py
+WorkingDirectory=/home/__PIHOLE_USER__/trigger_web
 Restart=on-failure
 RestartSec=10
 StandardOutput=journal
