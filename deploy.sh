@@ -307,13 +307,90 @@ show_web_logs() {
     remote_sudo "journalctl -u ${WEB_SERVICE_NAME} -f"
 }
 
+# Get app preset domains and regex
+# Returns: "domains|regex" or empty string if not found
+get_app_preset() {
+    local app_name="${1,,}"  # lowercase
+    case "$app_name" in
+        youtube)
+            echo 'youtube,youtu.be,googlevideo.com,ytimg.com|youtube|(^|\.)youtu\.be$|(^|\.)googlevideo\.com$|(^|\.)ytimg\.com$'
+            ;;
+        tiktok)
+            echo 'tiktok.com,tiktokcdn.com|(^|\.)tiktok\.com$|(^|\.)tiktokcdn\.com$'
+            ;;
+        netflix)
+            echo 'netflix.com,nflxvideo.net|(^|\.)netflix\.com$|(^|\.)nflxvideo\.net$'
+            ;;
+        discord)
+            echo 'discord.com,discordapp.com|(^|\.)discord\.com$|(^|\.)discordapp\.com$'
+            ;;
+        instagram)
+            echo 'instagram.com|.instagram\.com'
+            ;;
+        *)
+            echo ""
+            ;;
+    esac
+}
+
+# List available app presets
+list_app_presets() {
+    echo "Available app presets for -a/--app:"
+    echo "  youtube    - YouTube, YouTu.be, Googlevideo, YTImg"
+    echo "  tiktok     - TikTok, TikTokCDN"
+    echo "  netflix    - Netflix, NflxVideo"
+    echo "  discord    - Discord, DiscordApp"
+    echo "  instagram  - Instagram"
+}
+
+# Expand -a/--app option to -d and -r arguments
+expand_app_args() {
+    local args=("$@")
+    local expanded_args=()
+    local i=0
+
+    while [[ $i -lt ${#args[@]} ]]; do
+        local arg="${args[$i]}"
+        if [[ "$arg" == "-a" || "$arg" == "--app" ]]; then
+            ((i++))
+            if [[ $i -lt ${#args[@]} ]]; then
+                local app_name="${args[$i]}"
+                local preset=$(get_app_preset "$app_name")
+                if [[ -z "$preset" ]]; then
+                    log_error "Unknown app preset: $app_name"
+                    list_app_presets
+                    exit 1
+                fi
+                local domains="${preset%%|*}"
+                local regex="${preset#*|}"
+                expanded_args+=("-d" "$domains" "-r" "$regex")
+            else
+                log_error "Missing app name after -a/--app"
+                list_app_presets
+                exit 1
+            fi
+        else
+            expanded_args+=("$arg")
+        fi
+        ((i++))
+    done
+
+    printf '%s\n' "${expanded_args[@]}"
+}
+
 # Run a management command (--list, --add, --remove, etc.)
 run_management_cmd() {
     check_local_files
 
+    # Expand -a/--app options to -d and -r
+    local expanded_args=()
+    while IFS= read -r line; do
+        expanded_args+=("$line")
+    done < <(expand_app_args "$@")
+
     # Build properly quoted arguments for remote shell
     local SCRIPT_ARGS=""
-    for arg in "$@"; do
+    for arg in "${expanded_args[@]}"; do
         escaped_arg=$(printf '%s' "$arg" | sed "s/'/'\\\\''/g")
         SCRIPT_ARGS="$SCRIPT_ARGS '$escaped_arg'"
     done
@@ -364,13 +441,16 @@ print_usage() {
     echo "  -n, --name NAME        Trigger name"
     echo "  -g, --groups IDS       Pi-hole group IDs (comma-separated)"
     echo "  -t, --time SECONDS     Time limit in seconds"
+    echo "  -a, --app APP          Use preset domains/regex (youtube, tiktok, netflix, discord, instagram)"
     echo "  -d, --domains DOMAINS  Trigger domains (comma-separated)"
     echo "  -r, --regex PATTERN    Block regex pattern"
     echo "  --enable               Enable the trigger"
     echo "  --disable              Disable the trigger"
     echo ""
     echo "Examples:"
-    echo "  ./deploy.sh --add -n 'YouTube' -g 2,3 -t 3600 -d 'youtube,googlevideo.com' -r 'youtube|googlevideo\\.com'"
+    echo "  ./deploy.sh --add -n 'YouTube' -g 2,3 -t 3600 -a youtube"
+    echo "  ./deploy.sh --add -n 'TikTok' -g 2 -t 1800 -a tiktok"
+    echo "  ./deploy.sh --add -n 'Custom' -g 2 -t 3600 -d 'example.com' -r 'example\\.com'"
     echo "  ./deploy.sh --edit 1 -t 7200             Change time limit for trigger 1"
     echo "  ./deploy.sh --edit 1 --disable           Disable trigger 1"
 }
