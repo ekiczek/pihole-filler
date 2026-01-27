@@ -828,6 +828,8 @@ def parse_pihole_log_line(line):
 
 def tail_log(filepath):
     """Generator that yields new lines from a log file (like 'tail -f')."""
+    last_heartbeat_hour = None  # Track last hour we sent a heartbeat
+
     while running:
         try:
             with open(filepath, 'r') as f:
@@ -839,6 +841,13 @@ def tail_log(filepath):
                         yield line.strip()
                     else:
                         time.sleep(0.1)
+
+                        # Yield empty line at the top of each hour to trigger reset checks
+                        # even when there's no DNS activity
+                        current_hour = datetime.now().hour
+                        if last_heartbeat_hour != current_hour:
+                            last_heartbeat_hour = current_hour
+                            yield ""
 
                         try:
                             if os.stat(filepath).st_ino != os.fstat(f.fileno()).st_ino:
