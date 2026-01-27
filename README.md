@@ -106,18 +106,32 @@ Note the **Group ID** (shown in the Groups list) - you'll need it for triggers.
 Add a trigger to limit YouTube to 1 hour for groups 2 and 3:
 
 ```bash
+./deploy.sh --add -n 'YouTube Limit' -g 2,3 -t 3600 -a youtube
+```
+
+The `-a` option uses built-in presets for common services. Available presets:
+- `youtube` - YouTube, YouTu.be, Googlevideo, YTImg
+- `tiktok` - TikTok, TikTokCDN
+- `netflix` - Netflix, NflxVideo
+- `discord` - Discord, DiscordApp
+- `instagram` - Instagram
+
+For custom services, specify domains and regex manually:
+
+```bash
 ./deploy.sh --add \
-  -n 'YouTube Limit' \
+  -n 'Custom Service' \
   -g 2,3 \
   -t 3600 \
-  -d 'youtube,youtu.be,googlevideo.com,ytimg.com' \
-  -r 'youtube|(^|\.)youtu\.be$|(^|\.)googlevideo\.com$|(^|\.)ytimg\.com$'
+  -d 'example.com,cdn.example.com' \
+  -r '(^|\.)example\.com$'
 ```
 
 **Parameters:**
 - `-n, --name`: A descriptive name for the trigger
 - `-g, --groups`: Pi-hole group ID(s), comma-separated
 - `-t, --time`: Time limit in seconds (3600 = 1 hour)
+- `-a, --app`: Use preset domains/regex for common services
 - `-d, --domains`: Domains that start the timer (comma-separated, partial match)
 - `-r, --regex`: Regex pattern to block when time expires
 
@@ -280,6 +294,7 @@ This is useful for monitoring trigger activity, debugging issues, or verifying t
 | `-n, --name` | Trigger name |
 | `-g, --groups` | Pi-hole group IDs (comma-separated) |
 | `-t, --time` | Time limit in seconds |
+| `-a, --app` | Use preset domains/regex (youtube, tiktok, netflix, discord, instagram) |
 | `-d, --domains` | Trigger domains (comma-separated) |
 | `-r, --regex` | Block regex pattern |
 | `--enable` | Enable the trigger |
@@ -290,34 +305,19 @@ This is useful for monitoring trigger activity, debugging issues, or verifying t
 ### Limit YouTube to 30 minutes for Kids
 
 ```bash
-./deploy.sh --add \
-  -n 'Kids YouTube' \
-  -g 2 \
-  -t 1800 \
-  -d 'youtube,youtu.be,googlevideo.com,ytimg.com' \
-  -r 'youtube|(^|\.)youtu\.be$|(^|\.)googlevideo\.com$|(^|\.)ytimg\.com$'
+./deploy.sh --add -n 'Kids YouTube' -g 2 -t 1800 -a youtube
 ```
 
 ### Limit TikTok to 1 hour
 
 ```bash
-./deploy.sh --add \
-  -n 'TikTok Limit' \
-  -g 2 \
-  -t 3600 \
-  -d 'tiktok.com,tiktokcdn.com' \
-  -r '(^|\.)tiktok\.com$|(^|\.)tiktokcdn\.com$'
+./deploy.sh --add -n 'TikTok Limit' -g 2 -t 3600 -a tiktok
 ```
 
 ### Limit Netflix to 2 hours
 
 ```bash
-./deploy.sh --add \
-  -n 'Netflix Limit' \
-  -g 2 \
-  -t 7200 \
-  -d 'netflix.com,nflxvideo.net' \
-  -r '(^|\.)netflix\.com$|(^|\.)nflxvideo\.net$'
+./deploy.sh --add -n 'Netflix Limit' -g 2 -t 7200 -a netflix
 ```
 
 ### Extend time limit temporarily
