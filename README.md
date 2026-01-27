@@ -203,6 +203,13 @@ This is useful for monitoring trigger activity, debugging issues, or verifying t
 ```bash
 # Deploy everything (daemon + web interface) and restart services
 ./deploy.sh
+./deploy.sh --all          # Explicit form of above
+
+# Deploy daemon only (no web interface)
+./deploy.sh --cli-only
+
+# Remove previous installation (stop/disable services, remove files)
+./deploy.sh --clean
 
 # Check daemon status
 ./deploy.sh --status
@@ -247,6 +254,10 @@ This is useful for monitoring trigger activity, debugging issues, or verifying t
 
 | Command | Description |
 |---------|-------------|
+| *(no args)* | Deploy everything and restart services (same as `--all`) |
+| `--all` | Deploy daemon + web interface, restart both services |
+| `--cli-only` | Deploy daemon only (no web interface), restart daemon |
+| `--clean` | Remove previous installation (stop/disable services, remove files) |
 | `--list` | List all configured triggers |
 | `--add [OPTIONS]` | Add a new trigger |
 | `--edit ID [OPTIONS]` | Edit an existing trigger |
