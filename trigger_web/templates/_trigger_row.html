@@ -8,6 +8,15 @@
     <td class="trigger-time">
         {{ trigger.time_limit_seconds | format_time }}
     </td>
+    <td class="trigger-mode">
+        {% if trigger.block_mode == 'adlist' %}
+        <span class="badge badge-info" title="Adlist: {{ trigger.adlist_name or trigger.adlist_id }}">
+            Adlist
+        </span>
+        {% else %}
+        <span class="badge badge-secondary">Regex</span>
+        {% endif %}
+    </td>
     <td class="trigger-status">
         {% if trigger.enabled %}
         <span class="badge badge-success">Enabled</span>

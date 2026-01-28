@@ -62,7 +62,7 @@
         </div>
 
         <div class="form-card">
-            <h2>Domains</h2>
+            <h2>Trigger Domains</h2>
 
             <div class="form-group">
                 <label for="trigger_domains">Trigger Domains</label>
@@ -72,14 +72,66 @@
                           required>{{ form.get('trigger_domains', '') }}</textarea>
                 <p class="form-help">Comma-separated list of domain keywords to monitor (partial matches)</p>
             </div>
+        </div>
+
+        <div class="form-card">
+            <h2>Blocking Mode</h2>
 
             <div class="form-group">
-                <label for="block_regex">Block Regex Pattern</label>
-                <textarea id="block_regex" name="block_regex"
-                          placeholder="youtube|(^|\.)youtu\.be$|(^|\.)googlevideo\.com$"
-                          rows="3"
-                          required>{{ form.get('block_regex', '') }}</textarea>
-                <p class="form-help">Regex pattern to add to Pi-hole's blocklist when time expires</p>
+                <label>Block Mode</label>
+                <div class="radio-group">
+                    <label class="radio-label">
+                        <input type="radio" name="block_mode" value="regex"
+                               {% if form.get('block_mode', 'regex') == 'regex' %}checked{% endif %}
+                               onchange="toggleBlockMode()">
+                        <span class="radio-box"></span>
+                        <span class="radio-text">
+                            <strong>Regex Pattern</strong>
+                            <small>Add a regex deny rule to Pi-hole</small>
+                        </span>
+                    </label>
+                    <label class="radio-label">
+                        <input type="radio" name="block_mode" value="adlist"
+                               {% if form.get('block_mode') == 'adlist' %}checked{% endif %}
+                               onchange="toggleBlockMode()">
+                        <span class="radio-box"></span>
+                        <span class="radio-text">
+                            <strong>Adlist (Blocklist)</strong>
+                            <small>Associate an existing Pi-hole adlist with groups</small>
+                        </span>
+                    </label>
+                </div>
+            </div>
+
+            <div id="regex-fields" class="mode-fields">
+                <div class="form-group">
+                    <label for="block_regex">Block Regex Pattern</label>
+                    <textarea id="block_regex" name="block_regex"
+                              placeholder="youtube|(^|\.)youtu\.be$|(^|\.)googlevideo\.com$"
+                              rows="3">{{ form.get('block_regex', '') }}</textarea>
+                    <p class="form-help">Regex pattern to add to Pi-hole's blocklist when time expires</p>
+                </div>
+            </div>
+
+            <div id="adlist-fields" class="mode-fields" style="display: none;">
+                <div class="form-group">
+                    <label for="adlist_id">Select Adlist</label>
+                    {% if adlists %}
+                    <select id="adlist_id" name="adlist_id" class="form-select">
+                        <option value="">-- Select an adlist --</option>
+                        {% for adlist in adlists %}
+                        <option value="{{ adlist.id }}"
+                                {% if form.get('adlist_id')|string == adlist.id|string %}selected{% endif %}>
+                            #{{ adlist.id }}: {{ adlist.comment or adlist.address[:50] }}
+                            {% if not adlist.enabled %}(disabled){% endif %}
+                        </option>
+                        {% endfor %}
+                    </select>
+                    <p class="form-help">The adlist will be associated with the trigger's groups when time expires</p>
+                    {% else %}
+                    <p class="form-help text-warning">No adlists found in Pi-hole. Add adlists in Pi-hole admin first.</p>
+                    {% endif %}
+                </div>
             </div>
         </div>
 
@@ -125,12 +177,35 @@ function formatTime(seconds) {
     return mins ? hours + 'h ' + mins + 'm' : hours + 'h';
 }
 
+function getBlockMode() {
+    const selected = document.querySelector('input[name="block_mode"]:checked');
+    return selected ? selected.value : 'regex';
+}
+
+function toggleBlockMode() {
+    const mode = getBlockMode();
+    const regexFields = document.getElementById('regex-fields');
+    const adlistFields = document.getElementById('adlist-fields');
+
+    if (mode === 'adlist') {
+        regexFields.style.display = 'none';
+        adlistFields.style.display = 'block';
+    } else {
+        regexFields.style.display = 'block';
+        adlistFields.style.display = 'none';
+    }
+    updatePreview();
+}
+
 function updatePreview() {
     const name = document.getElementById('name').value.trim();
     const groups = getSelectedGroups();
     const time = document.getElementById('time_limit').value.trim();
     const domains = document.getElementById('trigger_domains').value.trim();
+    const mode = getBlockMode();
     const regex = document.getElementById('block_regex').value.trim();
+    const adlistSelect = document.getElementById('adlist_id');
+    const adlist = adlistSelect ? adlistSelect.options[adlistSelect.selectedIndex] : null;
 
     const preview = document.getElementById('preview');
 
@@ -144,7 +219,12 @@ function updatePreview() {
     if (groups.length > 0) html += '<dt>Groups</dt><dd>' + escapeHtml(groups.join(', ')) + '</dd>';
     if (time) html += '<dt>Time Limit</dt><dd>' + formatTime(parseInt(time)) + ' (' + time + ' seconds)</dd>';
     if (domains) html += '<dt>Trigger Domains</dt><dd>' + escapeHtml(domains) + '</dd>';
-    if (regex) html += '<dt>Block Regex</dt><dd><code>' + escapeHtml(regex) + '</code></dd>';
+    html += '<dt>Mode</dt><dd>' + (mode === 'adlist' ? 'Adlist' : 'Regex') + '</dd>';
+    if (mode === 'regex' && regex) {
+        html += '<dt>Block Regex</dt><dd><code>' + escapeHtml(regex) + '</code></dd>';
+    } else if (mode === 'adlist' && adlist && adlist.value) {
+        html += '<dt>Adlist</dt><dd>' + escapeHtml(adlist.text) + '</dd>';
+    }
     html += '</dl>';
 
     preview.innerHTML = html;
@@ -157,12 +237,13 @@ function escapeHtml(text) {
 }
 
 // Update preview on input
-document.querySelectorAll('input, textarea').forEach(el => {
+document.querySelectorAll('input, textarea, select').forEach(el => {
     el.addEventListener('input', updatePreview);
     el.addEventListener('change', updatePreview);
 });
 
-// Initial preview
+// Initial setup
+toggleBlockMode();
 updatePreview();
 </script>
 {% endblock %}

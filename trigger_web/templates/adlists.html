@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+
+{% block title %}Adlists{% endblock %}
+
+{% block content %}
+<div class="dashboard">
+    <div class="page-header">
+        <h1>Pi-hole Adlists</h1>
+        <div class="header-actions">
+            <a href="{{ url_for('add') }}" class="btn btn-primary">
+                Add Trigger
+            </a>
+        </div>
+    </div>
+
+    {% if adlists %}
+    <div class="triggers-table-wrapper">
+        <table class="triggers-table">
+            <thead>
+                <tr>
+                    <th>ID</th>
+                    <th>Address</th>
+                    <th>Comment</th>
+                    <th>Status</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for adlist in adlists %}
+                <tr class="{% if not adlist.enabled %}disabled{% endif %}">
+                    <td><strong>#{{ adlist.id }}</strong></td>
+                    <td class="adlist-address">
+                        <code title="{{ adlist.address }}">{{ adlist.address[:60] }}{% if adlist.address|length > 60 %}...{% endif %}</code>
+                    </td>
+                    <td>{{ adlist.comment or '-' }}</td>
+                    <td>
+                        {% if adlist.enabled %}
+                        <span class="badge badge-success">Enabled</span>
+                        {% else %}
+                        <span class="badge badge-disabled">Disabled</span>
+                        {% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% else %}
+    <div class="empty-state">
+        <svg viewBox="0 0 24 24" width="64" height="64" fill="currentColor">
+            <path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-5 14H7v-2h7v2zm3-4H7v-2h10v2zm0-4H7V7h10v2z"/>
+        </svg>
+        <h2>No Adlists Configured</h2>
+        <p>No adlists found in Pi-hole. Add adlists through the Pi-hole admin interface to use adlist mode for triggers.</p>
+    </div>
+    {% endif %}
+
+    <div class="info-cards">
+        <div class="info-card">
+            <h3>About Adlist Mode</h3>
+            <p>When a trigger uses adlist mode, the selected adlist is associated with the trigger's groups when the time limit expires. This allows you to use existing Pi-hole blocklists for time-based blocking instead of regex patterns.</p>
+        </div>
+        <div class="info-card">
+            <h3>Managing Adlists</h3>
+            <p>Adlists are managed through Pi-hole's admin interface. Add, edit, or remove adlists there, then use them in triggers here.</p>
+        </div>
+    </div>
+</div>
+{% endblock %}

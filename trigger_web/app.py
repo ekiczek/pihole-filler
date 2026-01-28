@@ -89,8 +89,30 @@ def init_trigger_db():
             value TEXT NOT NULL
         )
     """
-    success, output = run_sqlite(create_settings)
-    return success
+    run_sqlite(create_settings)
+
+    # Check current schema for migrations
+    check_col = "SELECT sql FROM sqlite_master WHERE type='table' AND name='triggers'"
+    success, schema = run_sqlite(check_col)
+
+    if success and schema:
+        # Migration: add block_mode and adlist_id columns for adlist support
+        if 'block_mode' not in schema:
+            run_sqlite("ALTER TABLE triggers ADD COLUMN block_mode TEXT DEFAULT 'regex'")
+            run_sqlite("ALTER TABLE triggers ADD COLUMN adlist_id INTEGER DEFAULT NULL")
+
+    # Create tracking table for trigger-created adlist associations
+    create_tracking = """
+        CREATE TABLE IF NOT EXISTS trigger_adlist_groups (
+            trigger_id INTEGER,
+            adlist_id INTEGER,
+            group_id INTEGER,
+            PRIMARY KEY (trigger_id, adlist_id, group_id)
+        )
+    """
+    run_sqlite(create_tracking)
+
+    return True
 
 
 def get_setting(key, default=None):
@@ -126,7 +148,7 @@ def get_all_triggers():
     """Get all triggers from the database."""
     query = """
         SELECT id, name, group_ids, time_limit_seconds, trigger_domains,
-               block_regex, enabled, is_triggered, created_at
+               block_regex, enabled, is_triggered, created_at, block_mode, adlist_id
         FROM triggers ORDER BY id
     """
     success, output = run_sqlite(query)
@@ -150,6 +172,8 @@ def get_all_triggers():
                 'enabled': parts[6] == '1',
                 'is_triggered': parts[7] == '1',
                 'created_at': parts[8],
+                'block_mode': parts[9] if len(parts) > 9 and parts[9] else 'regex',
+                'adlist_id': int(parts[10]) if len(parts) > 10 and parts[10] else None,
             })
     return triggers
 
@@ -158,7 +182,7 @@ def get_trigger(trigger_id):
     """Get a single trigger by ID."""
     query = f"""
         SELECT id, name, group_ids, time_limit_seconds, trigger_domains,
-               block_regex, enabled, is_triggered, created_at
+               block_regex, enabled, is_triggered, created_at, block_mode, adlist_id
         FROM triggers WHERE id = {trigger_id}
     """
     success, output = run_sqlite(query)
@@ -178,27 +202,33 @@ def get_trigger(trigger_id):
             'enabled': parts[6] == '1',
             'is_triggered': parts[7] == '1',
             'created_at': parts[8],
+            'block_mode': parts[9] if len(parts) > 9 and parts[9] else 'regex',
+            'adlist_id': int(parts[10]) if len(parts) > 10 and parts[10] else None,
         }
     return None
 
 
-def add_trigger(name, group_ids, time_limit, trigger_domains, block_regex):
+def add_trigger(name, group_ids, time_limit, trigger_domains, block_regex,
+                block_mode='regex', adlist_id=None):
     """Add a new trigger to the database."""
     # Escape single quotes
     name_esc = name.replace("'", "''")
     domains_esc = trigger_domains.replace("'", "''")
-    regex_esc = block_regex.replace("'", "''")
+    regex_esc = block_regex.replace("'", "''") if block_regex else ''
+
+    adlist_value = str(adlist_id) if adlist_id is not None else 'NULL'
 
     query = f"""
-        INSERT INTO triggers (name, group_ids, time_limit_seconds, trigger_domains, block_regex)
-        VALUES ('{name_esc}', '{group_ids}', {time_limit}, '{domains_esc}', '{regex_esc}')
+        INSERT INTO triggers (name, group_ids, time_limit_seconds, trigger_domains, block_regex, block_mode, adlist_id)
+        VALUES ('{name_esc}', '{group_ids}', {time_limit}, '{domains_esc}', '{regex_esc}', '{block_mode}', {adlist_value})
     """
     success, output = run_sqlite(query)
     return success, output
 
 
 def update_trigger(trigger_id, name=None, group_ids=None, time_limit=None,
-                   trigger_domains=None, block_regex=None, enabled=None):
+                   trigger_domains=None, block_regex=None, enabled=None,
+                   block_mode=None, adlist_id=None):
     """Update a trigger's fields."""
     updates = []
 
@@ -216,6 +246,10 @@ def update_trigger(trigger_id, name=None, group_ids=None, time_limit=None,
         updates.append(f"enabled = {1 if enabled else 0}")
         if not enabled:
             updates.append("is_triggered = 0")
+    if block_mode is not None:
+        updates.append(f"block_mode = '{block_mode}'")
+    if adlist_id is not None:
+        updates.append(f"adlist_id = {adlist_id}")
 
     if not updates:
         return False, "No changes specified"
@@ -256,6 +290,44 @@ def get_pihole_groups():
                 'description': parts[2] if len(parts) > 2 else '',
             })
     return groups
+
+
+def get_pihole_adlists():
+    """Get all Pi-hole adlists for the dropdown."""
+    query = "SELECT id, address, enabled, comment FROM adlist ORDER BY id"
+    success, output = run_sqlite(query, db_path=GRAVITY_DB)
+
+    if not success or not output:
+        return []
+
+    adlists = []
+    for line in output.split('\n'):
+        if not line.strip():
+            continue
+        parts = line.split('␞')
+        if len(parts) >= 3:
+            adlists.append({
+                'id': int(parts[0]),
+                'address': parts[1],
+                'enabled': parts[2] == '1',
+                'comment': parts[3] if len(parts) > 3 else '',
+            })
+    return adlists
+
+
+def get_adlist_name(adlist_id):
+    """Get display name for an adlist by ID."""
+    if adlist_id is None:
+        return None
+    adlists = get_pihole_adlists()
+    for adlist in adlists:
+        if adlist['id'] == adlist_id:
+            # Use comment if available, otherwise truncated address
+            if adlist['comment']:
+                return adlist['comment']
+            addr = adlist['address']
+            return addr[:40] + '...' if len(addr) > 40 else addr
+    return f"#{adlist_id}"
 
 
 def get_group_names(group_ids_str):
@@ -398,8 +470,51 @@ def get_existing_block(trigger_id, block_regex):
     return None
 
 
-def remove_block_rule(trigger_id, block_regex):
+def get_trigger_adlist_associations(trigger_id):
+    """Get adlist associations for a trigger."""
+    query = f"SELECT adlist_id, group_id FROM trigger_adlist_groups WHERE trigger_id = {trigger_id}"
+    success, output = run_sqlite(query)
+
+    if not success or not output:
+        return []
+
+    associations = []
+    for line in output.split('\n'):
+        if not line.strip():
+            continue
+        parts = line.split('␞')
+        if len(parts) >= 2:
+            associations.append({
+                'adlist_id': int(parts[0]),
+                'group_id': int(parts[1]),
+            })
+    return associations
+
+
+def remove_adlist_associations(trigger_id, adlist_id):
+    """Remove adlist associations created by this trigger."""
+    # Get associations created by this trigger
+    query = f"SELECT group_id FROM trigger_adlist_groups WHERE trigger_id = {trigger_id} AND adlist_id = {adlist_id}"
+    success, output = run_sqlite(query)
+
+    if success and output:
+        for group_id in output.strip().split('\n'):
+            if group_id:
+                # Remove from Pi-hole's adlist_by_group
+                del_query = f"DELETE FROM adlist_by_group WHERE adlist_id = {adlist_id} AND group_id = {group_id}"
+                run_sqlite(del_query, db_path=GRAVITY_DB)
+
+    # Clear tracking entries for this trigger
+    run_sqlite(f"DELETE FROM trigger_adlist_groups WHERE trigger_id = {trigger_id}")
+    return True
+
+
+def remove_block_rule(trigger_id, block_regex, block_mode='regex', adlist_id=None):
     """Remove the blocking rule for a trigger from Pi-hole."""
+    if block_mode == 'adlist' and adlist_id:
+        return remove_adlist_associations(trigger_id, adlist_id)
+
+    # Regex mode
     domain_id = get_existing_block(trigger_id, block_regex)
 
     if not domain_id:
@@ -418,7 +533,12 @@ def reset_trigger(trigger_id):
 
     # Remove block rule if it exists
     if trigger['is_triggered']:
-        remove_block_rule(trigger_id, trigger['block_regex'])
+        remove_block_rule(
+            trigger_id,
+            trigger['block_regex'],
+            trigger.get('block_mode', 'regex'),
+            trigger.get('adlist_id')
+        )
         reload_pihole()
 
     # Clear is_triggered flag
@@ -437,7 +557,12 @@ def reset_all_triggers():
 
     for trigger in triggers:
         if trigger['is_triggered']:
-            remove_block_rule(trigger['id'], trigger['block_regex'])
+            remove_block_rule(
+                trigger['id'],
+                trigger['block_regex'],
+                trigger.get('block_mode', 'regex'),
+                trigger.get('adlist_id')
+            )
             set_trigger_active(trigger['id'], False)
             removed += 1
 
@@ -520,14 +645,29 @@ def validate_trigger_form(form):
     if not trigger_domains:
         errors.append("At least one trigger domain is required")
 
-    block_regex = form.get('block_regex', '').strip()
-    if not block_regex:
-        errors.append("Block regex is required")
+    # Validate based on block mode
+    block_mode = form.get('block_mode', 'regex')
+
+    if block_mode == 'adlist':
+        # Adlist mode requires an adlist selection
+        adlist_id = form.get('adlist_id', '')
+        if not adlist_id:
+            errors.append("An adlist must be selected for adlist mode")
+        else:
+            try:
+                int(adlist_id)
+            except ValueError:
+                errors.append("Invalid adlist ID")
     else:
-        try:
-            re.compile(block_regex)
-        except re.error as e:
-            errors.append(f"Invalid regex: {e}")
+        # Regex mode requires a block regex
+        block_regex = form.get('block_regex', '').strip()
+        if not block_regex:
+            errors.append("Block regex is required for regex mode")
+        else:
+            try:
+                re.compile(block_regex)
+            except re.error as e:
+                errors.append(f"Invalid regex: {e}")
 
     return errors
 
@@ -573,10 +713,11 @@ def dashboard():
     next_reset = get_next_reset_time()
     reset_hour = get_reset_hour()
 
-    # Add formatted time and group names to each trigger
+    # Add formatted time, group names, and adlist names to each trigger
     for trigger in triggers:
         trigger['time_formatted'] = format_time(trigger['time_limit_seconds'])
         trigger['group_names'] = get_group_names(trigger['group_ids'])
+        trigger['adlist_name'] = get_adlist_name(trigger.get('adlist_id'))
 
     return render_template('dashboard.html',
                           triggers=triggers,
@@ -610,6 +751,7 @@ def status():
 def add():
     """Add a new trigger."""
     groups = get_pihole_groups()
+    adlists = get_pihole_adlists()
 
     if request.method == 'POST':
         # Handle multiselect - getlist returns list of selected values
@@ -626,15 +768,21 @@ def add():
         if errors:
             for error in errors:
                 flash(error, 'error')
-            return render_template('add.html', groups=groups, form=form_data)
+            return render_template('add.html', groups=groups, adlists=adlists, form=form_data)
 
         # Extract form data
         name = request.form['name'].strip()
         time_limit = int(request.form['time_limit'])
         trigger_domains = request.form['trigger_domains'].strip()
-        block_regex = request.form['block_regex'].strip()
+        block_mode = request.form.get('block_mode', 'regex')
+        block_regex = request.form.get('block_regex', '').strip()
+        adlist_id = request.form.get('adlist_id')
+        adlist_id = int(adlist_id) if adlist_id else None
 
-        success, output = add_trigger(name, group_ids, time_limit, trigger_domains, block_regex)
+        success, output = add_trigger(
+            name, group_ids, time_limit, trigger_domains, block_regex,
+            block_mode=block_mode, adlist_id=adlist_id
+        )
 
         if success:
             flash(f'Trigger "{name}" created successfully', 'success')
@@ -642,9 +790,9 @@ def add():
             return redirect(url_for('dashboard'))
         else:
             flash(f'Failed to create trigger: {output}', 'error')
-            return render_template('add.html', groups=groups, form=form_data)
+            return render_template('add.html', groups=groups, adlists=adlists, form=form_data)
 
-    return render_template('add.html', groups=groups, form={})
+    return render_template('add.html', groups=groups, adlists=adlists, form={})
 
 
 # =============================================================================
@@ -665,6 +813,7 @@ def edit(trigger_id):
     trigger['selected_groups'] = [str(g) for g in get_group_ids_list(trigger['group_ids'])]
 
     groups = get_pihole_groups()
+    adlists = get_pihole_adlists()
 
     if request.method == 'POST':
         # Handle multiselect - getlist returns list of selected values
@@ -681,18 +830,26 @@ def edit(trigger_id):
         if errors:
             for error in errors:
                 flash(error, 'error')
-            return render_template('edit.html', trigger=trigger, groups=groups, form=form_data)
+            return render_template('edit.html', trigger=trigger, groups=groups, adlists=adlists, form=form_data)
 
         # Check if trigger was active - need to remove block before editing
         if trigger['is_triggered']:
-            remove_block_rule(trigger_id, trigger['block_regex'])
+            remove_block_rule(
+                trigger_id,
+                trigger['block_regex'],
+                trigger.get('block_mode', 'regex'),
+                trigger.get('adlist_id')
+            )
             reload_pihole()
 
         # Extract form data
         name = request.form['name'].strip()
         time_limit = int(request.form['time_limit'])
         trigger_domains = request.form['trigger_domains'].strip()
-        block_regex = request.form['block_regex'].strip()
+        block_mode = request.form.get('block_mode', 'regex')
+        block_regex = request.form.get('block_regex', '').strip()
+        adlist_id = request.form.get('adlist_id')
+        adlist_id = int(adlist_id) if adlist_id else None
         enabled = 'enabled' in request.form
 
         success, output = update_trigger(
@@ -702,7 +859,9 @@ def edit(trigger_id):
             time_limit=time_limit,
             trigger_domains=trigger_domains,
             block_regex=block_regex,
-            enabled=enabled
+            enabled=enabled,
+            block_mode=block_mode,
+            adlist_id=adlist_id
         )
 
         if success:
@@ -711,9 +870,9 @@ def edit(trigger_id):
             return redirect(url_for('dashboard'))
         else:
             flash(f'Failed to update trigger: {output}', 'error')
-            return render_template('edit.html', trigger=trigger, groups=groups, form=form_data)
+            return render_template('edit.html', trigger=trigger, groups=groups, adlists=adlists, form=form_data)
 
-    return render_template('edit.html', trigger=trigger, groups=groups, form=trigger)
+    return render_template('edit.html', trigger=trigger, groups=groups, adlists=adlists, form=trigger)
 
 
 # =============================================================================
@@ -732,7 +891,12 @@ def delete(trigger_id):
 
     # Remove any active block
     if trigger['is_triggered']:
-        remove_block_rule(trigger_id, trigger['block_regex'])
+        remove_block_rule(
+            trigger_id,
+            trigger['block_regex'],
+            trigger.get('block_mode', 'regex'),
+            trigger.get('adlist_id')
+        )
         reload_pihole()
 
     success, output = delete_trigger(trigger_id)
@@ -762,7 +926,12 @@ def toggle(trigger_id):
 
     # If disabling and currently triggered, remove the block
     if not new_state and trigger['is_triggered']:
-        remove_block_rule(trigger_id, trigger['block_regex'])
+        remove_block_rule(
+            trigger_id,
+            trigger['block_regex'],
+            trigger.get('block_mode', 'regex'),
+            trigger.get('adlist_id')
+        )
         reload_pihole()
 
     success, _ = update_trigger(trigger_id, enabled=new_state)
@@ -775,6 +944,7 @@ def toggle(trigger_id):
         if request.headers.get('HX-Request'):
             updated_trigger = get_trigger(trigger_id)
             updated_trigger['group_names'] = get_group_names(updated_trigger['group_ids'])
+            updated_trigger['adlist_name'] = get_adlist_name(updated_trigger.get('adlist_id'))
             return render_template('_trigger_row.html', trigger=updated_trigger)
 
         flash(f'Trigger "{trigger["name"]}" {status}', 'success')
@@ -803,6 +973,7 @@ def reset(trigger_id):
         if request.headers.get('HX-Request'):
             updated_trigger = get_trigger(trigger_id)
             updated_trigger['group_names'] = get_group_names(updated_trigger['group_ids'])
+            updated_trigger['adlist_name'] = get_adlist_name(updated_trigger.get('adlist_id'))
             return render_template('_trigger_row.html', trigger=updated_trigger)
 
         flash(f'Trigger "{trigger["name"]}" has been reset', 'success')
@@ -847,6 +1018,18 @@ def logs_entries():
     lines = max(50, min(500, lines))
     log_content = get_daemon_logs(lines)
     return log_content
+
+
+# =============================================================================
+# ROUTES - ADLISTS
+# =============================================================================
+
+@app.route('/adlists')
+@login_required
+def adlists():
+    """List all Pi-hole adlists."""
+    adlist_list = get_pihole_adlists()
+    return render_template('adlists.html', adlists=adlist_list)
 
 
 # =============================================================================
