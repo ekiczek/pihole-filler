@@ -33,6 +33,7 @@
                     <th>Name</th>
                     <th>Groups</th>
                     <th>Time Limit</th>
+                    <th>Mode</th>
                     <th>Status</th>
                     <th>Blocked</th>
                     <th class="actions-col">Actions</th>
@@ -61,7 +62,11 @@
     <div class="info-cards">
         <div class="info-card">
             <h3>How It Works</h3>
-            <p>Time triggers monitor DNS queries from specified device groups. When a trigger domain is accessed, a timer starts. After the time limit expires, the block regex is applied to prevent further access until the daily reset.</p>
+            <p>Time triggers monitor DNS queries from specified device groups. When a trigger domain is accessed, a timer starts. After the time limit expires, blocking is applied using one of two modes:</p>
+            <ul style="margin: 0.5rem 0 0 1.5rem; padding: 0;">
+                <li><strong>Regex:</strong> Adds a regex deny rule to block matching domains</li>
+                <li><strong>Adlist:</strong> Associates a Pi-hole blocklist with the trigger's groups</li>
+            </ul>
         </div>
         <div class="info-card">
             <h3>Daily Reset</h3>

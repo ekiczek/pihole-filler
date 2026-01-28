@@ -614,6 +614,11 @@ a:hover {
     color: white;
 }
 
+.badge-secondary {
+    background: #6c757d;
+    color: white;
+}
+
 .badge-neutral {
     background: #eee;
     color: #999;
@@ -800,6 +805,107 @@ a:hover {
 
 .text-warning {
     color: var(--color-warning) !important;
+}
+
+/* Radio Group */
+.radio-group {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    margin-top: 0.5rem;
+    padding: 0.75rem;
+    background: #f9f9f9;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--color-border);
+}
+
+.radio-label {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.75rem;
+    padding: 0.75rem;
+    margin: 0;
+    background: white;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    transition: var(--transition);
+    font-weight: normal !important;
+}
+
+.radio-label:hover {
+    border-color: var(--color-primary);
+    background: #f8fafc;
+}
+
+.radio-label input[type="radio"] {
+    display: none;
+}
+
+.radio-box {
+    flex-shrink: 0;
+    width: 20px;
+    height: 20px;
+    border: 2px solid #ccc;
+    border-radius: 50%;
+    background: white;
+    position: relative;
+    transition: var(--transition);
+    margin-top: 2px;
+}
+
+.radio-label input:checked + .radio-box {
+    border-color: var(--color-primary);
+}
+
+.radio-label input:checked + .radio-box::after {
+    content: '';
+    position: absolute;
+    left: 4px;
+    top: 4px;
+    width: 8px;
+    height: 8px;
+    background: var(--color-primary);
+    border-radius: 50%;
+}
+
+.radio-text {
+    display: flex;
+    flex-direction: column;
+    gap: 0.125rem;
+}
+
+.radio-text strong {
+    color: var(--color-text);
+    font-weight: 600;
+}
+
+.radio-text small {
+    color: var(--color-text-muted);
+    font-size: 0.8rem;
+}
+
+/* Mode fields container */
+.mode-fields {
+    margin-top: 1rem;
+}
+
+/* Form Select */
+.form-select {
+    width: 100%;
+    padding: 0.625rem 0.75rem;
+    font-size: 1rem;
+    line-height: 1.5;
+    color: #555;
+    background-color: #fff;
+    border: 1px solid #d2d6de;
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+}
+
+.form-select:focus {
+    border-color: var(--color-primary);
+    outline: none;
 }
 
 /* Time Presets */
@@ -1020,6 +1126,20 @@ a:hover {
     color: #d4d4d4;
     white-space: pre-wrap;
     word-wrap: break-word;
+}
+
+/* Adlist table */
+.adlist-address code {
+    font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+    font-size: 0.8rem;
+    background: #f4f4f4;
+    padding: 0.25rem 0.5rem;
+    border-radius: var(--radius-sm);
+    display: inline-block;
+    max-width: 500px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
 /* Utilities */
