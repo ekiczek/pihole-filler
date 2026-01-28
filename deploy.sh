@@ -421,6 +421,7 @@ print_usage() {
     echo ""
     echo "Trigger Management:"
     echo "  ./deploy.sh --list                       List configured triggers"
+    echo "  ./deploy.sh --list-adlists               List available Pi-hole adlists"
     echo "  ./deploy.sh --add [OPTIONS]              Add a new trigger"
     echo "  ./deploy.sh --edit ID [OPTIONS]          Edit a trigger"
     echo "  ./deploy.sh --remove ID                  Remove a trigger"
@@ -433,14 +434,18 @@ print_usage() {
     echo "  -t, --time SECONDS     Time limit in seconds"
     echo "  -a, --app APP          Use preset domains/regex (youtube, tiktok, netflix, discord, instagram)"
     echo "  -d, --domains DOMAINS  Trigger domains (comma-separated)"
-    echo "  -r, --regex PATTERN    Block regex pattern"
+    echo "  -r, --regex PATTERN    Block regex pattern (for regex mode)"
+    echo "  --mode MODE            Blocking mode: regex (default) or adlist"
+    echo "  --adlist ID            Pi-hole adlist ID (required when mode=adlist)"
     echo "  --enable               Enable the trigger"
     echo "  --disable              Disable the trigger"
     echo ""
     echo "Examples:"
-    echo "  ./deploy.sh --add -n 'YouTube' -g 2,3 -t 3600 -a youtube"
+    echo "  ./deploy.sh --add -n 'YouTube' -g 2,3 -t 3600 -a youtube                    # Regex mode (default)"
     echo "  ./deploy.sh --add -n 'TikTok' -g 2 -t 1800 -a tiktok"
     echo "  ./deploy.sh --add -n 'Custom' -g 2 -t 3600 -d 'example.com' -r 'example\\.com'"
+    echo "  ./deploy.sh --add -n 'Blocklist' -g 2 -t 3600 -d 'example.com' --mode adlist --adlist 5"
+    echo "  ./deploy.sh --list-adlists                                                  # Show available adlists"
     echo "  ./deploy.sh --edit 1 -t 7200             Change time limit for trigger 1"
     echo "  ./deploy.sh --edit 1 --disable           Disable trigger 1"
 }
@@ -498,7 +503,7 @@ case "${1:-}" in
         restart_web
         exit 0
         ;;
-    --list|--add|--edit|--remove|--reset|--unblock)
+    --list|--list-adlists|--add|--edit|--remove|--reset|--unblock)
         run_management_cmd "$@"
         exit $?
         ;;

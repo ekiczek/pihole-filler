@@ -6,7 +6,9 @@ A daemon for Pi-hole v6 that monitors DNS queries and automatically blocks speci
 
 1. **Monitor**: The daemon watches Pi-hole's DNS query log in real-time
 2. **Track**: When a device in a monitored group accesses a trigger domain (e.g., youtube.com), a timer starts
-3. **Block**: After the time limit expires, a regex deny rule is added to Pi-hole blocking those domains for the group
+3. **Block**: After the time limit expires, blocking is applied via one of two modes:
+   - **Regex mode** (default): Adds a regex deny rule to Pi-hole
+   - **Adlist mode**: Associates an existing Pi-hole adlist/blocklist with the trigger's groups
 4. **Persist**: Block rules are stored in Pi-hole's gravity database and survive reboots
 
 ```
@@ -21,6 +23,7 @@ A daemon for Pi-hole v6 that monitors DNS queries and automatically blocks speci
 - **Multiple triggers**: Configure different time limits for different services
 - **Group-based**: Apply limits to specific Pi-hole client groups (e.g., "Kids Devices")
 - **Flexible matching**: Use simple domain lists for triggering and regex patterns for blocking
+- **Two blocking modes**: Use regex rules for custom patterns, or leverage existing Pi-hole adlists
 - **Automatic daily reset**: All blocks are removed and timers reset daily (configurable time)
 - **Persistent blocks**: Blocks survive daemon restarts and reboots (until the daily reset)
 - **Systemd integration**: Runs as a system service with auto-start on boot
@@ -133,7 +136,9 @@ For custom services, specify domains and regex manually:
 - `-t, --time`: Time limit in seconds (3600 = 1 hour)
 - `-a, --app`: Use preset domains/regex for common services
 - `-d, --domains`: Domains that start the timer (comma-separated, partial match)
-- `-r, --regex`: Regex pattern to block when time expires
+- `-r, --regex`: Regex pattern to block when time expires (for regex mode)
+- `--mode`: Blocking mode - `regex` (default) or `adlist`
+- `--adlist`: Pi-hole adlist ID to activate (required for adlist mode)
 
 ### Trigger Domains vs Block Regex
 
@@ -144,6 +149,46 @@ For custom services, specify domains and regex manually:
 **Example for YouTube:**
 - Trigger: `youtube,youtu.be,googlevideo.com` - Detects YouTube usage
 - Regex: `youtube|(^|\.)youtu\.be$|(^|\.)googlevideo\.com$` - Blocks all YouTube domains
+
+### Blocking Modes
+
+Triggers support two mutually exclusive blocking modes:
+
+#### Regex Mode (Default)
+
+Adds a regex deny rule to Pi-hole when the timer expires. Best for:
+- Custom blocking patterns
+- Services not covered by existing adlists
+- Fine-grained control over what gets blocked
+
+```bash
+./deploy.sh --add -n 'YouTube' -g 2 -t 3600 -a youtube
+# or explicitly:
+./deploy.sh --add -n 'YouTube' -g 2 -t 3600 -d 'youtube.com' -r 'youtube\.com' --mode regex
+```
+
+#### Adlist Mode
+
+Associates an existing Pi-hole adlist (blocklist) with the trigger's groups when the timer expires. Best for:
+- Leveraging curated blocklists you've already added to Pi-hole
+- Blocking entire categories (e.g., social media, gaming, ads)
+- Applying comprehensive blocks without writing complex regex
+
+```bash
+# First, list available adlists to find the ID
+./deploy.sh --list-adlists
+
+# Then create a trigger using that adlist
+./deploy.sh --add -n 'Social Media Block' -g 2 -t 3600 -d 'facebook.com,instagram.com' --mode adlist --adlist 5
+```
+
+**How adlist mode works:**
+1. You add adlists to Pi-hole normally (via the Pi-hole admin interface)
+2. Initially, the adlist is NOT associated with the trigger's groups
+3. When the trigger's timer expires, the adlist is associated with those groups
+4. On daily reset (or manual reset), the association is removed
+
+This allows time-based activation of blocklists that you've curated in Pi-hole.
 
 ### Daily Reset
 
@@ -273,6 +318,7 @@ This is useful for monitoring trigger activity, debugging issues, or verifying t
 | `--cli-only` | Deploy daemon only (no web interface), restart daemon |
 | `--clean` | Remove previous installation (stop/disable services, remove files) |
 | `--list` | List all configured triggers |
+| `--list-adlists` | List available Pi-hole adlists (for adlist mode) |
 | `--add [OPTIONS]` | Add a new trigger |
 | `--edit ID [OPTIONS]` | Edit an existing trigger |
 | `--remove ID` | Remove a trigger and its active block |
@@ -296,7 +342,9 @@ This is useful for monitoring trigger activity, debugging issues, or verifying t
 | `-t, --time` | Time limit in seconds |
 | `-a, --app` | Use preset domains/regex (youtube, tiktok, netflix, discord, instagram) |
 | `-d, --domains` | Trigger domains (comma-separated) |
-| `-r, --regex` | Block regex pattern |
+| `-r, --regex` | Block regex pattern (for regex mode) |
+| `--mode` | Blocking mode: `regex` (default) or `adlist` |
+| `--adlist` | Pi-hole adlist ID (required when mode=adlist) |
 | `--enable` | Enable the trigger |
 | `--disable` | Disable the trigger |
 
@@ -318,6 +366,16 @@ This is useful for monitoring trigger activity, debugging issues, or verifying t
 
 ```bash
 ./deploy.sh --add -n 'Netflix Limit' -g 2 -t 7200 -a netflix
+```
+
+### Use an adlist for blocking
+
+```bash
+# List available adlists in Pi-hole
+./deploy.sh --list-adlists
+
+# Create a trigger that activates adlist #5 after 1 hour
+./deploy.sh --add -n 'Gaming Block' -g 2 -t 3600 -d 'steam,epicgames,roblox' --mode adlist --adlist 5
 ```
 
 ### Extend time limit temporarily

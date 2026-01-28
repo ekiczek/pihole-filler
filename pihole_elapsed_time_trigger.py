@@ -5,9 +5,14 @@ Pi-hole v6 Elapsed Time Trigger
 Monitors Pi-hole DNS queries and blocks specified domains for device groups
 after a configurable time period from first access. Supports multiple triggers.
 
+Supports two blocking modes:
+  - regex: Adds a regex deny rule to block domains (default)
+  - adlist: Associates an existing Pi-hole adlist with trigger groups
+
 Usage:
     sudo python3 pihole_elapsed_time_trigger.py                    Run the daemon
     sudo python3 pihole_elapsed_time_trigger.py --list             List all triggers
+    sudo python3 pihole_elapsed_time_trigger.py --list-adlists     List Pi-hole adlists
     sudo python3 pihole_elapsed_time_trigger.py --add [OPTIONS]    Add a new trigger
     sudo python3 pihole_elapsed_time_trigger.py --edit ID [OPTS]   Edit a trigger
     sudo python3 pihole_elapsed_time_trigger.py --remove ID        Remove a trigger
@@ -19,12 +24,15 @@ Trigger field options (for --add and --edit):
     -g, --groups IDS       Pi-hole group IDs (comma-separated, e.g., "2,3")
     -t, --time SECONDS     Time limit in seconds
     -d, --domains DOMAINS  Trigger domains (comma-separated)
-    -r, --regex PATTERN    Block regex pattern
+    -r, --regex PATTERN    Block regex pattern (for regex mode)
+    --mode MODE            Blocking mode: regex (default) or adlist
+    --adlist ID            Pi-hole adlist ID (required for adlist mode)
     --enable               Enable the trigger
     --disable              Disable the trigger
 
 Examples:
-    --add -n 'YouTube' -g 2,3 -t 3600 -d 'youtube,youtu.be,googlevideo.com,ytimg.com' -r 'youtube|(^|\.)youtu\.be$|(^|\.)googlevideo\.com$|(^|\.)ytimg\.com$'
+    --add -n 'YouTube' -g 2,3 -t 3600 -d 'youtube,googlevideo.com' -r 'youtube|googlevideo\.com'
+    --add -n 'Blocklist' -g 2 -t 3600 -d 'example.com' --mode adlist --adlist 5
     --edit 1 -t 7200                    Change time limit for trigger 1
     --edit 1 --disable                  Disable trigger 1
 
@@ -159,6 +167,24 @@ def init_trigger_db():
                 return False
             print("[DB] Column added")
 
+        # Migration: add block_mode and adlist_id columns for adlist support
+        if 'block_mode' not in schema:
+            print("[DB] Adding adlist support columns...")
+            run_sqlite("ALTER TABLE triggers ADD COLUMN block_mode TEXT DEFAULT 'regex'", db_path=TRIGGER_DB)
+            run_sqlite("ALTER TABLE triggers ADD COLUMN adlist_id INTEGER DEFAULT NULL", db_path=TRIGGER_DB)
+            print("[DB] Adlist columns added")
+
+    # Create tracking table for trigger-created adlist associations
+    create_tracking = """
+        CREATE TABLE IF NOT EXISTS trigger_adlist_groups (
+            trigger_id INTEGER,
+            adlist_id INTEGER,
+            group_id INTEGER,
+            PRIMARY KEY (trigger_id, adlist_id, group_id)
+        )
+    """
+    run_sqlite(create_tracking, db_path=TRIGGER_DB)
+
     return True
 
 def get_setting(key, default=None):
@@ -184,7 +210,7 @@ def get_reset_hour():
 
 def load_triggers():
     """Load all enabled triggers from the database."""
-    query = "SELECT id, name, group_ids, time_limit_seconds, trigger_domains, block_regex FROM triggers WHERE enabled = 1"
+    query = "SELECT id, name, group_ids, time_limit_seconds, trigger_domains, block_regex, block_mode, adlist_id FROM triggers WHERE enabled = 1"
     success, output = run_sqlite(query, db_path=TRIGGER_DB)
 
     if not success:
@@ -200,19 +226,22 @@ def load_triggers():
             continue
         parts = line.split('␞')
         if len(parts) >= 6:
-            triggers.append({
+            trigger = {
                 'id': int(parts[0]),
                 'name': parts[1],
                 'group_ids': [int(g.strip()) for g in parts[2].split(',')],
                 'time_limit_seconds': int(parts[3]),
                 'trigger_domains': [d.strip() for d in parts[4].split(',')],
                 'block_regex': parts[5],
-            })
+                'block_mode': parts[6] if len(parts) > 6 and parts[6] else 'regex',
+                'adlist_id': int(parts[7]) if len(parts) > 7 and parts[7] else None,
+            }
+            triggers.append(trigger)
     return triggers
 
 def list_triggers():
     """List all triggers in the database."""
-    query = "SELECT id, name, group_ids, time_limit_seconds, trigger_domains, enabled, is_triggered FROM triggers ORDER BY id"
+    query = "SELECT id, name, group_ids, time_limit_seconds, trigger_domains, enabled, is_triggered, block_mode, adlist_id FROM triggers ORDER BY id"
     success, output = run_sqlite(query, db_path=TRIGGER_DB)
 
     if not success:
@@ -225,9 +254,9 @@ def list_triggers():
         return
 
     print("\nConfigured Triggers:")
-    print("=" * 100)
-    print(f"{'ID':<4} {'Name':<20} {'Groups':<10} {'Time':<8} {'Domains':<25} {'Status':<10} {'Triggered':<10}")
-    print("-" * 100)
+    print("=" * 115)
+    print(f"{'ID':<4} {'Name':<20} {'Groups':<10} {'Time':<8} {'Mode':<10} {'Domains':<25} {'Status':<10} {'Triggered':<10}")
+    print("-" * 115)
 
     for line in output.split('\n'):
         if not line.strip():
@@ -241,11 +270,14 @@ def list_triggers():
             domains = parts[4][:23] + '..' if len(parts[4]) > 25 else parts[4]
             status = "Enabled" if parts[5] == '1' else "Disabled"
             triggered = "BLOCKED" if parts[6] == '1' else "-"
-            print(f"{trigger_id:<4} {name:<20} {group_ids:<10} {time_limit:<8} {domains:<25} {status:<10} {triggered:<10}")
+            block_mode = parts[7] if len(parts) > 7 and parts[7] else 'regex'
+            adlist_id = parts[8] if len(parts) > 8 and parts[8] else ''
+            mode_display = f"adlist:{adlist_id}" if block_mode == 'adlist' else 'regex'
+            print(f"{trigger_id:<4} {name:<20} {group_ids:<10} {time_limit:<8} {mode_display:<10} {domains:<25} {status:<10} {triggered:<10}")
 
-    print("=" * 100)
+    print("=" * 115)
 
-def add_trigger_cli(name, group_ids, time_limit, trigger_domains, block_regex):
+def add_trigger_cli(name, group_ids, time_limit, trigger_domains, block_regex, block_mode='regex', adlist_id=None):
     """Add a new trigger via command-line arguments."""
     # Validate inputs
     if not name:
@@ -271,9 +303,22 @@ def add_trigger_cli(name, group_ids, time_limit, trigger_domains, block_regex):
         print("Error: At least one trigger domain is required")
         return False
 
-    if not block_regex:
-        print("Error: Block regex is required")
-        return False
+    # Validate mode-specific requirements
+    if block_mode == 'adlist':
+        if adlist_id is None:
+            print("Error: --adlist ID is required when using --mode adlist")
+            return False
+        # Verify adlist exists
+        check_query = f"SELECT id FROM adlist WHERE id = {adlist_id}"
+        success, output = run_sqlite(check_query)
+        if not success or not output:
+            print(f"Error: Adlist with ID {adlist_id} not found in Pi-hole")
+            return False
+    else:
+        # Regex mode - require block_regex
+        if not block_regex:
+            print("Error: Block regex is required for regex mode")
+            return False
 
     # Normalize group_ids (remove spaces, ensure consistent format)
     group_ids_normalized = ','.join(str(g) for g in group_id_list)
@@ -281,17 +326,22 @@ def add_trigger_cli(name, group_ids, time_limit, trigger_domains, block_regex):
     # Escape single quotes for SQL
     name_escaped = name.replace("'", "''")
     trigger_domains_escaped = trigger_domains.replace("'", "''")
-    block_regex_escaped = block_regex.replace("'", "''")
+    block_regex_escaped = block_regex.replace("'", "''") if block_regex else ''
 
+    # Build insert query with mode and adlist_id
+    adlist_value = str(adlist_id) if adlist_id is not None else 'NULL'
     query = f"""
-        INSERT INTO triggers (name, group_ids, time_limit_seconds, trigger_domains, block_regex)
-        VALUES ('{name_escaped}', '{group_ids_normalized}', {time_limit}, '{trigger_domains_escaped}', '{block_regex_escaped}')
+        INSERT INTO triggers (name, group_ids, time_limit_seconds, trigger_domains, block_regex, block_mode, adlist_id)
+        VALUES ('{name_escaped}', '{group_ids_normalized}', {time_limit}, '{trigger_domains_escaped}', '{block_regex_escaped}', '{block_mode}', {adlist_value})
     """
 
     success, output = run_sqlite(query, db_path=TRIGGER_DB)
     if success:
         print(f"Trigger '{name}' added successfully!")
         print(f"  Groups: {group_ids_normalized}")
+        print(f"  Mode: {block_mode}")
+        if block_mode == 'adlist':
+            print(f"  Adlist ID: {adlist_id}")
         restart_daemon_service()
         return True
     else:
@@ -319,7 +369,7 @@ def add_trigger():
 def remove_trigger(trigger_id):
     """Remove a trigger by ID."""
     # First check if it exists and get its details for cleanup
-    check_query = f"SELECT id, name, group_ids, time_limit_seconds, trigger_domains, block_regex FROM triggers WHERE id = {trigger_id}"
+    check_query = f"SELECT id, name, group_ids, time_limit_seconds, trigger_domains, block_regex, block_mode, adlist_id FROM triggers WHERE id = {trigger_id}"
     success, output = run_sqlite(check_query, db_path=TRIGGER_DB)
 
     if not success or not output:
@@ -338,13 +388,24 @@ def remove_trigger(trigger_id):
             'time_limit_seconds': int(parts[3]),
             'trigger_domains': [d.strip() for d in parts[4].split(',')],
             'block_regex': parts[5],
+            'block_mode': parts[6] if len(parts) > 6 and parts[6] else 'regex',
+            'adlist_id': int(parts[7]) if len(parts) > 7 and parts[7] else None,
         }
         # Remove any active block for this trigger
-        block_id = get_existing_block(trigger)
-        if block_id:
-            print(f"Removing active block rule (ID: {block_id})...")
-            remove_block(trigger)
-            reload_pihole()
+        if trigger.get('block_mode') == 'adlist':
+            # Check for tracked adlist associations
+            check_assoc = f"SELECT COUNT(*) FROM trigger_adlist_groups WHERE trigger_id = {trigger_id}"
+            success, count = run_sqlite(check_assoc, db_path=TRIGGER_DB)
+            if success and count and int(count) > 0:
+                print(f"Removing adlist associations...")
+                remove_block(trigger)
+                reload_pihole()
+        else:
+            block_id = get_existing_block(trigger)
+            if block_id:
+                print(f"Removing active block rule (ID: {block_id})...")
+                remove_block(trigger)
+                reload_pihole()
 
     query = f"DELETE FROM triggers WHERE id = {trigger_id}"
     success, _ = run_sqlite(query, db_path=TRIGGER_DB)
@@ -358,10 +419,11 @@ def remove_trigger(trigger_id):
         return False
 
 def edit_trigger(trigger_id, name=None, group_ids=None, time_limit=None,
-                 trigger_domains=None, block_regex=None, enabled=None):
+                 trigger_domains=None, block_regex=None, enabled=None,
+                 block_mode=None, adlist_id=None):
     """Edit a trigger's fields. Only specified fields are updated."""
     # First get current trigger data
-    query = f"SELECT id, name, group_ids, time_limit_seconds, trigger_domains, block_regex, enabled, is_triggered FROM triggers WHERE id = {trigger_id}"
+    query = f"SELECT id, name, group_ids, time_limit_seconds, trigger_domains, block_regex, enabled, is_triggered, block_mode, adlist_id FROM triggers WHERE id = {trigger_id}"
     success, output = run_sqlite(query, db_path=TRIGGER_DB)
 
     if not success or not output:
@@ -382,6 +444,8 @@ def edit_trigger(trigger_id, name=None, group_ids=None, time_limit=None,
         'block_regex': parts[5],
         'enabled': parts[6] == '1',
         'is_triggered': parts[7] == '1',
+        'block_mode': parts[8] if len(parts) > 8 and parts[8] else 'regex',
+        'adlist_id': int(parts[9]) if len(parts) > 9 and parts[9] else None,
     }
 
     # Check if trigger has an active block that needs to be removed
@@ -391,12 +455,17 @@ def edit_trigger(trigger_id, name=None, group_ids=None, time_limit=None,
             'name': current['name'],
             'group_ids': [int(g.strip()) for g in current['group_ids'].split(',')],
             'block_regex': current['block_regex'],
+            'block_mode': current['block_mode'],
+            'adlist_id': current['adlist_id'],
         }
         print(f"Removing active block before editing...")
-        block_id = get_existing_block(trigger_for_block)
-        if block_id:
-            remove_block(trigger_for_block)
-            reload_pihole()
+        if current['block_mode'] == 'adlist':
+            remove_adlist_from_groups(trigger_for_block)
+        else:
+            block_id = get_existing_block(trigger_for_block)
+            if block_id:
+                remove_block(trigger_for_block)
+        reload_pihole()
 
     # Build update query with only changed fields
     updates = []
@@ -427,6 +496,16 @@ def edit_trigger(trigger_id, name=None, group_ids=None, time_limit=None,
         # Clear is_triggered if disabling
         if not enabled:
             updates.append("is_triggered = 0")
+    if block_mode is not None:
+        updates.append(f"block_mode = '{block_mode}'")
+    if adlist_id is not None:
+        # Verify adlist exists
+        check_query = f"SELECT id FROM adlist WHERE id = {adlist_id}"
+        success, output = run_sqlite(check_query)
+        if not success or not output:
+            print(f"Error: Adlist with ID {adlist_id} not found in Pi-hole")
+            return False
+        updates.append(f"adlist_id = {adlist_id}")
 
     if not updates:
         print("No changes specified")
@@ -464,7 +543,7 @@ def set_trigger_active(trigger_id, is_triggered):
 def reset_trigger(trigger_id, restart_daemon=True):
     """Reset a trigger: remove active block and clear timer state."""
     # First get the trigger details
-    query = f"SELECT id, name, group_ids, time_limit_seconds, trigger_domains, block_regex, is_triggered FROM triggers WHERE id = {trigger_id}"
+    query = f"SELECT id, name, group_ids, time_limit_seconds, trigger_domains, block_regex, is_triggered, block_mode, adlist_id FROM triggers WHERE id = {trigger_id}"
     success, output = run_sqlite(query, db_path=TRIGGER_DB)
 
     if not success or not output:
@@ -483,23 +562,40 @@ def reset_trigger(trigger_id, restart_daemon=True):
         'time_limit_seconds': int(parts[3]),
         'trigger_domains': [d.strip() for d in parts[4].split(',')],
         'block_regex': parts[5],
+        'block_mode': parts[7] if len(parts) > 7 and parts[7] else 'regex',
+        'adlist_id': int(parts[8]) if len(parts) > 8 and parts[8] else None,
     }
     is_triggered = parts[6] == '1'
 
     print(f"Resetting trigger '{trigger['name']}' (ID: {trigger_id})...")
 
-    # Check if there's an active block rule in Pi-hole
+    # Handle based on block mode
     block_removed = False
-    domain_id = get_existing_block(trigger)
-    if domain_id:
-        print(f"  Removing block rule (ID: {domain_id})...")
-        remove_block(trigger)
-        block_removed = True
-    elif is_triggered:
-        print(f"  No block rule found in Pi-hole, clearing triggered flag...")
-        set_trigger_active(trigger_id, False)
+    if trigger.get('block_mode') == 'adlist':
+        # Check for tracked adlist associations
+        check_query = f"SELECT COUNT(*) FROM trigger_adlist_groups WHERE trigger_id = {trigger_id}"
+        success, count = run_sqlite(check_query, db_path=TRIGGER_DB)
+        if success and count and int(count) > 0:
+            print(f"  Removing adlist associations...")
+            remove_adlist_from_groups(trigger)
+            block_removed = True
+        elif is_triggered:
+            print(f"  No adlist associations found, clearing triggered flag...")
+            set_trigger_active(trigger_id, False)
+        else:
+            print(f"  No active block found")
     else:
-        print(f"  No active block found")
+        # Regex mode - check if there's an active block rule in Pi-hole
+        domain_id = get_existing_block(trigger)
+        if domain_id:
+            print(f"  Removing block rule (ID: {domain_id})...")
+            remove_block(trigger)
+            block_removed = True
+        elif is_triggered:
+            print(f"  No block rule found in Pi-hole, clearing triggered flag...")
+            set_trigger_active(trigger_id, False)
+        else:
+            print(f"  No active block found")
 
     if block_removed:
         reload_pihole()
@@ -541,7 +637,11 @@ def get_existing_block(trigger):
     return None
 
 def add_block(trigger):
-    """Add blocking regex to the database for a trigger's groups."""
+    """Add blocking rule to the database for a trigger's groups."""
+    # Check if this trigger uses adlist mode
+    if trigger.get('block_mode') == 'adlist':
+        return add_adlist_to_groups(trigger)
+
     comment = get_block_comment(trigger)
     print(f"[{trigger['name']}] Adding block rule...")
 
@@ -606,6 +706,10 @@ def enable_block(trigger, domain_id):
 
 def remove_block(trigger):
     """Remove the blocking rule for a trigger."""
+    # Check if this trigger uses adlist mode
+    if trigger.get('block_mode') == 'adlist':
+        return remove_adlist_from_groups(trigger)
+
     domain_id = get_existing_block(trigger)
 
     if not domain_id:
@@ -631,46 +735,140 @@ def remove_block(trigger):
 
     return True
 
-def remove_all_blocks():
-    """Remove all block rules created by triggers."""
-    query = f"SELECT id, comment FROM domainlist WHERE comment LIKE 'Time trigger [%' AND type = {DOMAINLIST_TYPE_REGEX_DENY}"
+def add_adlist_to_groups(trigger):
+    """Associate adlist with trigger's groups when time expires."""
+    adlist_id = trigger['adlist_id']
+
+    for group_id in trigger['group_ids']:
+        # Add to Pi-hole's adlist_by_group
+        query = f"INSERT OR IGNORE INTO adlist_by_group (adlist_id, group_id) VALUES ({adlist_id}, {group_id})"
+        run_sqlite(query)
+
+        # Track this association
+        track_query = f"INSERT OR IGNORE INTO trigger_adlist_groups (trigger_id, adlist_id, group_id) VALUES ({trigger['id']}, {adlist_id}, {group_id})"
+        run_sqlite(track_query, db_path=TRIGGER_DB)
+
+    group_list = ','.join(str(g) for g in trigger['group_ids'])
+    print(f"[{trigger['name']}] Adlist {adlist_id} associated with group(s) {group_list}")
+    set_trigger_active(trigger['id'], True)
+    return True
+
+def remove_adlist_from_groups(trigger):
+    """Remove adlist associations created by this trigger."""
+    adlist_id = trigger['adlist_id']
+
+    # Get associations created by this trigger
+    query = f"SELECT group_id FROM trigger_adlist_groups WHERE trigger_id = {trigger['id']} AND adlist_id = {adlist_id}"
+    success, output = run_sqlite(query, db_path=TRIGGER_DB)
+
+    if success and output:
+        for group_id in output.strip().split('\n'):
+            if group_id:
+                # Remove from Pi-hole
+                del_query = f"DELETE FROM adlist_by_group WHERE adlist_id = {adlist_id} AND group_id = {group_id}"
+                run_sqlite(del_query)
+                print(f"[{trigger['name']}] Removed adlist {adlist_id} from group {group_id}")
+
+    # Clear tracking
+    run_sqlite(f"DELETE FROM trigger_adlist_groups WHERE trigger_id = {trigger['id']}", db_path=TRIGGER_DB)
+    set_trigger_active(trigger['id'], False)
+    return True
+
+def list_adlists():
+    """List all Pi-hole adlists."""
+    query = "SELECT id, address, enabled, comment FROM adlist ORDER BY id"
     success, output = run_sqlite(query)
 
     if not success:
-        print(f"Error querying blocks: {output}")
-        return False
+        print(f"Error: Failed to query adlists: {output}")
+        return
 
     if not output:
-        print("No active blocks found.")
-        # Clear all is_triggered flags just in case
-        clear_query = "UPDATE triggers SET is_triggered = 0 WHERE is_triggered = 1"
-        run_sqlite(clear_query, db_path=TRIGGER_DB)
-        return True
+        print("No adlists configured in Pi-hole.")
+        return
 
-    removed = 0
-    trigger_ids_cleared = []
+    print("\nPi-hole Adlists:")
+    print("=" * 100)
+    print(f"{'ID':<6} {'Enabled':<10} {'Address':<60} {'Comment':<20}")
+    print("-" * 100)
+
     for line in output.split('\n'):
         if not line.strip():
             continue
         parts = line.split('␞')
-        if len(parts) >= 2:
-            domain_id = parts[0]
-            comment = parts[1]
+        if len(parts) >= 3:
+            adlist_id = parts[0]
+            address = parts[1][:58] + '..' if len(parts[1]) > 60 else parts[1]
+            enabled = "Yes" if parts[2] == '1' else "No"
+            comment = (parts[3][:18] + '..') if len(parts) > 3 and len(parts[3]) > 20 else (parts[3] if len(parts) > 3 else '')
+            print(f"{adlist_id:<6} {enabled:<10} {address:<60} {comment:<20}")
 
-            # Extract trigger ID from comment (format: "Time trigger [ID] - Name")
-            match = re.search(r'Time trigger \[(\d+)\]', comment)
-            if match:
-                trigger_ids_cleared.append(int(match.group(1)))
+    print("=" * 100)
 
-            delete_query = f"DELETE FROM domainlist WHERE id = {domain_id}"
-            success, _ = run_sqlite(delete_query)
-            if success:
-                print(f"Removed: {comment}")
+def remove_all_blocks():
+    """Remove all block rules created by triggers."""
+    removed = 0
+    trigger_ids_cleared = []
+
+    # First, handle regex blocks
+    query = f"SELECT id, comment FROM domainlist WHERE comment LIKE 'Time trigger [%' AND type = {DOMAINLIST_TYPE_REGEX_DENY}"
+    success, output = run_sqlite(query)
+
+    if success and output:
+        for line in output.split('\n'):
+            if not line.strip():
+                continue
+            parts = line.split('␞')
+            if len(parts) >= 2:
+                domain_id = parts[0]
+                comment = parts[1]
+
+                # Extract trigger ID from comment (format: "Time trigger [ID] - Name")
+                match = re.search(r'Time trigger \[(\d+)\]', comment)
+                if match:
+                    trigger_ids_cleared.append(int(match.group(1)))
+
+                delete_query = f"DELETE FROM domainlist WHERE id = {domain_id}"
+                success, _ = run_sqlite(delete_query)
+                if success:
+                    print(f"Removed regex block: {comment}")
+                    removed += 1
+
+    # Second, handle adlist associations
+    adlist_query = "SELECT DISTINCT trigger_id, adlist_id, group_id FROM trigger_adlist_groups"
+    success, output = run_sqlite(adlist_query, db_path=TRIGGER_DB)
+
+    if success and output:
+        for line in output.split('\n'):
+            if not line.strip():
+                continue
+            parts = line.split('␞')
+            if len(parts) >= 3:
+                trigger_id = int(parts[0])
+                adlist_id = int(parts[1])
+                group_id = int(parts[2])
+
+                # Remove from Pi-hole
+                del_query = f"DELETE FROM adlist_by_group WHERE adlist_id = {adlist_id} AND group_id = {group_id}"
+                run_sqlite(del_query)
+                print(f"Removed adlist {adlist_id} from group {group_id} (trigger {trigger_id})")
                 removed += 1
+                if trigger_id not in trigger_ids_cleared:
+                    trigger_ids_cleared.append(trigger_id)
 
-    # Clear is_triggered flags for all removed triggers
+        # Clear all tracking entries
+        run_sqlite("DELETE FROM trigger_adlist_groups", db_path=TRIGGER_DB)
+
+    if removed == 0:
+        print("No active blocks found.")
+
+    # Clear is_triggered flags for all affected triggers
     for trigger_id in trigger_ids_cleared:
         set_trigger_active(trigger_id, False)
+
+    # Also clear any orphaned is_triggered flags
+    clear_query = "UPDATE triggers SET is_triggered = 0 WHERE is_triggered = 1"
+    run_sqlite(clear_query, db_path=TRIGGER_DB)
 
     if removed > 0:
         reload_pihole()
@@ -702,12 +900,19 @@ def perform_daily_reset():
 
         # Check if this trigger has an active block
         if state['is_blocked']:
-            domain_id = get_existing_block(trigger)
-            if domain_id:
-                print(f"[Daily Reset] Removing block for '{trigger['name']}'")
-                query = f"DELETE FROM domainlist WHERE id = {domain_id}"
-                run_sqlite(query)
+            if trigger.get('block_mode') == 'adlist':
+                # Remove adlist associations
+                print(f"[Daily Reset] Removing adlist associations for '{trigger['name']}'")
+                remove_adlist_from_groups(trigger)
                 blocks_removed += 1
+            else:
+                # Remove regex block
+                domain_id = get_existing_block(trigger)
+                if domain_id:
+                    print(f"[Daily Reset] Removing block for '{trigger['name']}'")
+                    query = f"DELETE FROM domainlist WHERE id = {domain_id}"
+                    run_sqlite(query)
+                    blocks_removed += 1
 
             # Clear is_triggered in database
             set_trigger_active(trigger['id'], False)
@@ -720,6 +925,9 @@ def perform_daily_reset():
     # Also clear any orphaned is_triggered flags in database
     clear_query = "UPDATE triggers SET is_triggered = 0 WHERE is_triggered = 1"
     run_sqlite(clear_query, db_path=TRIGGER_DB)
+
+    # Clear any orphaned adlist tracking entries
+    run_sqlite("DELETE FROM trigger_adlist_groups", db_path=TRIGGER_DB)
 
     if blocks_removed > 0:
         reload_pihole()
@@ -979,9 +1187,11 @@ def main():
     for trigger in triggers:
         state = trigger_states[trigger['id']]
         group_list = ','.join(str(g) for g in trigger['group_ids'])
+        mode_info = f"adlist:{trigger['adlist_id']}" if trigger.get('block_mode') == 'adlist' else 'regex'
         print(f"  [{trigger['id']}] {trigger['name']}")
         print(f"      Groups: {group_list} ({len(state['target_ips'])} clients)")
         print(f"      Time limit: {trigger['time_limit_seconds']} seconds")
+        print(f"      Mode: {mode_info}")
         print(f"      Watching: {', '.join(trigger['trigger_domains'][:3])}{'...' if len(trigger['trigger_domains']) > 3 else ''}")
         print()
 
@@ -1046,8 +1256,11 @@ def build_argument_parser():
 Examples:
   %(prog)s                                          Run the daemon
   %(prog)s --list                                   List all triggers
+  %(prog)s --list-adlists                           List available Pi-hole adlists
   %(prog)s --add -n 'YouTube' -g 2,3 -t 3600 -d 'youtube,googlevideo.com' -r 'youtube|googlevideo\\.com'
+  %(prog)s --add -n 'Blocklist' -g 2 -t 3600 -d 'example.com' --mode adlist --adlist 5
   %(prog)s --edit 1 -t 7200                         Change time limit for trigger 1
+  %(prog)s --edit 1 --mode adlist --adlist 3        Switch trigger 1 to adlist mode
   %(prog)s --edit 1 --disable                       Disable trigger 1
   %(prog)s --edit 1 --enable                        Enable trigger 1
   %(prog)s --remove 1                               Remove trigger 1
@@ -1059,6 +1272,7 @@ Examples:
     # Mutually exclusive command group
     cmd_group = parser.add_mutually_exclusive_group()
     cmd_group.add_argument('--list', action='store_true', help='List all triggers')
+    cmd_group.add_argument('--list-adlists', action='store_true', help='List available Pi-hole adlists')
     cmd_group.add_argument('--add', action='store_true', help='Add a new trigger')
     cmd_group.add_argument('--edit', type=int, metavar='ID', help='Edit trigger with specified ID')
     cmd_group.add_argument('--remove', type=int, metavar='ID', help='Remove trigger with specified ID')
@@ -1071,7 +1285,11 @@ Examples:
     field_group.add_argument('-g', '--groups', type=str, help='Pi-hole group IDs (comma-separated, e.g., "2,3")')
     field_group.add_argument('-t', '--time', type=int, help='Time limit in seconds')
     field_group.add_argument('-d', '--domains', type=str, help='Trigger domains (comma-separated)')
-    field_group.add_argument('-r', '--regex', type=str, help='Block regex pattern')
+    field_group.add_argument('-r', '--regex', type=str, help='Block regex pattern (for regex mode)')
+    field_group.add_argument('--mode', type=str, choices=['regex', 'adlist'], default='regex',
+                             help='Blocking mode: regex (default) or adlist')
+    field_group.add_argument('--adlist', type=int, metavar='ID',
+                             help='Pi-hole adlist ID (required when mode=adlist)')
 
     # Enable/disable (used with --edit)
     enable_group = parser.add_mutually_exclusive_group()
@@ -1085,7 +1303,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     # Check if any command was specified
-    is_command = args.list or args.add or args.edit or args.remove or args.reset or args.unblock
+    is_command = args.list or getattr(args, 'list_adlists', False) or args.add or args.edit or args.remove or args.reset or args.unblock
 
     if is_command:
         # Commands need root
@@ -1101,17 +1319,35 @@ if __name__ == "__main__":
             list_triggers()
             sys.exit(0)
 
+        elif getattr(args, 'list_adlists', False):
+            list_adlists()
+            sys.exit(0)
+
         elif args.add:
-            # Check if we have all required fields
-            if args.name and args.groups and args.time and args.domains and args.regex:
-                if add_trigger_cli(args.name, args.groups, str(args.time), args.domains, args.regex):
-                    sys.exit(0)
-                sys.exit(1)
+            # Check required fields based on mode
+            mode = getattr(args, 'mode', 'regex')
+            adlist_id = getattr(args, 'adlist', None)
+
+            if mode == 'adlist':
+                # Adlist mode requires: name, groups, time, domains, adlist
+                if args.name and args.groups and args.time and args.domains and adlist_id is not None:
+                    if add_trigger_cli(args.name, args.groups, str(args.time), args.domains, args.regex or '', mode, adlist_id):
+                        sys.exit(0)
+                    sys.exit(1)
+                else:
+                    print("Error: Adlist mode requires -n, -g, -t, -d, and --adlist options")
+                    sys.exit(1)
             else:
-                # Interactive mode
-                if add_trigger():
-                    sys.exit(0)
-                sys.exit(1)
+                # Regex mode requires: name, groups, time, domains, regex
+                if args.name and args.groups and args.time and args.domains and args.regex:
+                    if add_trigger_cli(args.name, args.groups, str(args.time), args.domains, args.regex, mode, adlist_id):
+                        sys.exit(0)
+                    sys.exit(1)
+                else:
+                    # Interactive mode
+                    if add_trigger():
+                        sys.exit(0)
+                    sys.exit(1)
 
         elif args.edit is not None:
             # Determine enabled state
@@ -1128,7 +1364,9 @@ if __name__ == "__main__":
                 time_limit=args.time,
                 trigger_domains=args.domains,
                 block_regex=args.regex,
-                enabled=enabled
+                enabled=enabled,
+                block_mode=getattr(args, 'mode', None) if getattr(args, 'mode', 'regex') != 'regex' else None,
+                adlist_id=getattr(args, 'adlist', None)
             ):
                 sys.exit(0)
             sys.exit(1)
