@@ -739,6 +739,14 @@ def add_adlist_to_groups(trigger):
     """Associate adlist with trigger's groups when time expires."""
     adlist_id = trigger['adlist_id']
 
+    # Enable the adlist in Pi-hole (required for blocking to work)
+    enable_query = f"UPDATE adlist SET enabled = 1 WHERE id = {adlist_id}"
+    success, output = run_sqlite(enable_query)
+    if success:
+        print(f"[{trigger['name']}] Enabled adlist {adlist_id}")
+    else:
+        print(f"[{trigger['name']}] Warning: Failed to enable adlist {adlist_id}: {output}")
+
     for group_id in trigger['group_ids']:
         # Add to Pi-hole's adlist_by_group
         query = f"INSERT OR IGNORE INTO adlist_by_group (adlist_id, group_id) VALUES ({adlist_id}, {group_id})"
@@ -768,6 +776,14 @@ def remove_adlist_from_groups(trigger):
                 del_query = f"DELETE FROM adlist_by_group WHERE adlist_id = {adlist_id} AND group_id = {group_id}"
                 run_sqlite(del_query)
                 print(f"[{trigger['name']}] Removed adlist {adlist_id} from group {group_id}")
+
+    # Disable the adlist in Pi-hole (restore to non-blocking state)
+    disable_query = f"UPDATE adlist SET enabled = 0 WHERE id = {adlist_id}"
+    success, output = run_sqlite(disable_query)
+    if success:
+        print(f"[{trigger['name']}] Disabled adlist {adlist_id}")
+    else:
+        print(f"[{trigger['name']}] Warning: Failed to disable adlist {adlist_id}: {output}")
 
     # Clear tracking
     run_sqlite(f"DELETE FROM trigger_adlist_groups WHERE trigger_id = {trigger['id']}", db_path=TRIGGER_DB)
@@ -838,6 +854,7 @@ def remove_all_blocks():
     adlist_query = "SELECT DISTINCT trigger_id, adlist_id, group_id FROM trigger_adlist_groups"
     success, output = run_sqlite(adlist_query, db_path=TRIGGER_DB)
 
+    adlists_to_disable = set()
     if success and output:
         for line in output.split('\n'):
             if not line.strip():
@@ -853,8 +870,15 @@ def remove_all_blocks():
                 run_sqlite(del_query)
                 print(f"Removed adlist {adlist_id} from group {group_id} (trigger {trigger_id})")
                 removed += 1
+                adlists_to_disable.add(adlist_id)
                 if trigger_id not in trigger_ids_cleared:
                     trigger_ids_cleared.append(trigger_id)
+
+        # Disable all adlists that were associated with triggers
+        for adlist_id in adlists_to_disable:
+            disable_query = f"UPDATE adlist SET enabled = 0 WHERE id = {adlist_id}"
+            run_sqlite(disable_query)
+            print(f"Disabled adlist {adlist_id}")
 
         # Clear all tracking entries
         run_sqlite("DELETE FROM trigger_adlist_groups", db_path=TRIGGER_DB)
