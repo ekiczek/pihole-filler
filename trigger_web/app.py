@@ -363,11 +363,17 @@ def get_group_ids_list(group_ids_str):
 def verify_password(password):
     """
     Verify a password against Pi-hole's API (v6+).
-    Uses the local Pi-hole API to authenticate.
+    Uses the local Pi-hole API to authenticate, then immediately
+    deletes the session to avoid accumulating unused sessions.
     """
     import urllib.request
     import json
     import ssl
+
+    # Create SSL context that doesn't verify (localhost self-signed cert)
+    ssl_context = ssl.create_default_context()
+    ssl_context.check_hostname = False
+    ssl_context.verify_mode = ssl.CERT_NONE
 
     try:
         # Pi-hole v6 API authentication endpoint (HTTPS on port 443)
@@ -381,22 +387,41 @@ def verify_password(password):
             method='POST'
         )
 
-        # Create SSL context that doesn't verify (localhost self-signed cert)
-        ssl_context = ssl.create_default_context()
-        ssl_context.check_hostname = False
-        ssl_context.verify_mode = ssl.CERT_NONE
-
         with urllib.request.urlopen(req, timeout=5, context=ssl_context) as response:
             result = json.loads(response.read().decode('utf-8'))
-            # Pi-hole returns a session object with 'valid' field on success
-            return result.get('session', {}).get('valid', False)
+            session_info = result.get('session', {})
+            is_valid = session_info.get('valid', False)
+            sid = session_info.get('sid')
+
+            # If we got a valid session, immediately delete it to free the slot
+            if sid:
+                try:
+                    del_req = urllib.request.Request(
+                        url,
+                        headers={'Content-Type': 'application/json', 'sid': sid},
+                        method='DELETE'
+                    )
+                    urllib.request.urlopen(del_req, timeout=5, context=ssl_context)
+                except Exception:
+                    pass  # Best effort cleanup
+
+            return is_valid
 
     except urllib.error.HTTPError as e:
+        # Read response body for debugging
+        try:
+            body = e.read().decode('utf-8')
+        except:
+            body = "(could not read body)"
+        print(f"[Auth] HTTP {e.code}: {body}")
+
         # 401 means invalid password
         if e.code == 401:
             return False
-        # Other errors - log and deny
-        print(f"[Auth] HTTP error: {e.code}")
+        # 429 means rate limited or max sessions exceeded
+        if e.code == 429:
+            return "rate_limited"
+        # Other errors - deny
         return False
     except Exception as e:
         print(f"[Auth] Error verifying password: {e}")
@@ -682,11 +707,14 @@ def login():
     if request.method == 'POST':
         password = request.form.get('password', '')
 
-        if verify_password(password):
+        result = verify_password(password)
+        if result is True:
             session['authenticated'] = True
             session.permanent = True
             next_url = request.args.get('next') or url_for('dashboard')
             return redirect(next_url)
+        elif result == "rate_limited":
+            flash('Too many login attempts. Please wait a minute and try again.', 'error')
         else:
             flash('Invalid password', 'error')
 
