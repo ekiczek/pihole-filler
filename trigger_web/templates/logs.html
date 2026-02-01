@@ -34,14 +34,26 @@
 
 <script>
     let isPaused = false;
+    let manualPause = false;  // Track if user manually paused vs auto-pause from scroll
     const logContent = document.getElementById('log-content');
     const pauseBtn = document.getElementById('pause-btn');
     const pauseIcon = document.getElementById('pause-icon');
     const pauseText = document.getElementById('pause-text');
     const lineCountSelect = document.getElementById('line-count');
+    const logContainer = document.querySelector('.log-container');
 
-    function togglePause() {
-        isPaused = !isPaused;
+    // Check if user is scrolled near the bottom (within 50px)
+    function isNearBottom() {
+        const threshold = 50;
+        return logContainer.scrollHeight - logContainer.scrollTop - logContainer.clientHeight < threshold;
+    }
+
+    function setPaused(paused, isManual = false) {
+        isPaused = paused;
+        if (isManual) {
+            manualPause = paused;
+        }
+
         if (isPaused) {
             // Remove the hx-trigger to stop polling
             logContent.removeAttribute('hx-trigger');
@@ -50,6 +62,7 @@
             pauseBtn.classList.remove('btn-secondary');
             pauseBtn.classList.add('btn-warning');
         } else {
+            manualPause = false;
             // Restore polling
             logContent.setAttribute('hx-trigger', 'every 2s');
             htmx.process(logContent);
@@ -60,6 +73,10 @@
             // Trigger immediate refresh
             htmx.trigger(logContent, 'htmx:trigger');
         }
+    }
+
+    function togglePause() {
+        setPaused(!isPaused, true);
     }
 
     function updateLineCount() {
@@ -74,14 +91,33 @@
     }
 
     function scrollToBottom() {
-        const container = document.querySelector('.log-container');
-        container.scrollTop = container.scrollHeight;
+        logContainer.scrollTop = logContainer.scrollHeight;
+        // Resume auto-refresh when scrolling to bottom (unless manually paused)
+        if (isPaused && !manualPause) {
+            setPaused(false);
+        }
     }
 
-    // Auto-scroll to bottom after each update (optional - can be toggled)
+    // Auto-scroll to bottom after each update only if already near bottom
     document.body.addEventListener('htmx:afterSwap', function(evt) {
         if (evt.detail.target.id === 'log-content') {
-            scrollToBottom();
+            // Only auto-scroll if we were already at the bottom
+            if (isNearBottom()) {
+                scrollToBottom();
+            }
+        }
+    });
+
+    // Detect when user scrolls away from bottom - auto-pause refresh
+    logContainer.addEventListener('scroll', function() {
+        if (!manualPause) {
+            if (!isNearBottom() && !isPaused) {
+                // User scrolled up - pause refresh
+                setPaused(true, false);
+            } else if (isNearBottom() && isPaused) {
+                // User scrolled back to bottom - resume refresh
+                setPaused(false);
+            }
         }
     });
 
