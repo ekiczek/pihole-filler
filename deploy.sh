@@ -427,6 +427,7 @@ print_usage() {
     echo "  ./deploy.sh --remove ID                  Remove a trigger"
     echo "  ./deploy.sh --reset ID                   Reset a trigger (remove active block)"
     echo "  ./deploy.sh --unblock                    Remove all active blocks"
+    echo "  ./deploy.sh --fresh-start                Clear all state and restart daemon"
     echo ""
     echo "Trigger field options (for --add and --edit):"
     echo "  -n, --name NAME        Trigger name"
@@ -503,7 +504,7 @@ case "${1:-}" in
         restart_web
         exit 0
         ;;
-    --list|--list-adlists|--add|--edit|--remove|--reset|--unblock)
+    --list|--list-adlists|--add|--edit|--remove|--reset|--unblock|--fresh-start)
         run_management_cmd "$@"
         exit $?
         ;;
