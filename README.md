@@ -25,7 +25,7 @@ A daemon for Pi-hole v6 that monitors DNS queries and automatically blocks speci
 - **Flexible matching**: Use simple domain lists for triggering and regex patterns for blocking
 - **Two blocking modes**: Use regex rules for custom patterns, or leverage existing Pi-hole adlists
 - **Automatic daily reset**: All blocks are removed and timers reset daily (configurable time)
-- **Persistent blocks**: Blocks survive daemon restarts and reboots (until the daily reset)
+- **State persistence**: Timer progress and blocks survive daemon restarts (use `--fresh-start` to reset)
 - **Systemd integration**: Runs as a system service with auto-start on boot
 - **Remote management**: Deploy and manage from your development machine via SSH
 - **Web interface**: Browser-based admin UI for managing triggers (port 8080)
@@ -202,6 +202,21 @@ This ensures that time limits apply per-day rather than accumulating indefinitel
 
 To change the reset time, go to the **Settings** page in the web interface (`http://<your-pi-hole-ip>:8080/settings`) and select your preferred hour. The setting uses the Pi-hole server's local time zone.
 
+### State Persistence
+
+The daemon preserves state across restarts:
+- **Timer progress**: If a device was 30 minutes into a 1-hour limit, it resumes from 30 minutes
+- **Active blocks**: Blocks remain in place and don't need to be re-applied
+- **Automatic recovery**: If a timer expired while the daemon was stopped, the block is applied on restart
+
+To clear all state and start fresh (equivalent to the daily reset), use:
+
+```bash
+./deploy.sh --fresh-start
+```
+
+This is useful when you want to manually give devices a fresh time allowance without waiting for the daily reset.
+
 ## Web Interface
 
 The web interface provides a browser-based admin UI for managing triggers, accessible at `http://<pi-hole-ip>:8080`.
@@ -324,6 +339,7 @@ This is useful for monitoring trigger activity, debugging issues, or verifying t
 | `--remove ID` | Remove a trigger and its active block |
 | `--reset ID` | Remove active block and reset timer |
 | `--unblock` | Remove all active blocks |
+| `--fresh-start` | Clear all state and restart (reset timers and remove blocks) |
 | `--status` | Show daemon status |
 | `--logs` | View live daemon logs |
 | `--stop` | Stop the daemon |
@@ -422,11 +438,14 @@ ssh pi@<your-pi-hole-ip> "sudo journalctl -u pihole-trigger -n 50"
 ### Reset everything
 
 ```bash
-# Remove all blocks
-./deploy.sh --unblock
+# Clear all state (timers and blocks) and restart daemon
+./deploy.sh --fresh-start
+```
 
-# Restart daemon
-./deploy.sh --stop && ./deploy.sh --start
+Or to just remove blocks without resetting timers:
+
+```bash
+./deploy.sh --unblock
 ```
 
 ## Architecture

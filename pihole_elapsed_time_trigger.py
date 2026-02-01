@@ -174,6 +174,11 @@ def init_trigger_db():
             run_sqlite("ALTER TABLE triggers ADD COLUMN adlist_id INTEGER DEFAULT NULL", db_path=TRIGGER_DB)
             print("[DB] Adlist columns added")
 
+        # Migration: add first_access_at column for state persistence
+        if 'first_access_at' not in schema:
+            print("[DB] Adding first_access_at column for state persistence...")
+            run_sqlite("ALTER TABLE triggers ADD COLUMN first_access_at TEXT DEFAULT NULL", db_path=TRIGGER_DB)
+
     # Create tracking table for trigger-created adlist associations
     create_tracking = """
         CREATE TABLE IF NOT EXISTS trigger_adlist_groups (
@@ -540,6 +545,31 @@ def set_trigger_active(trigger_id, is_triggered):
     success, output = run_sqlite(query, db_path=TRIGGER_DB)
     return success
 
+
+def save_trigger_state(trigger_id, first_access):
+    """Save the first_access timestamp for a trigger."""
+    timestamp = f"'{first_access.isoformat()}'" if first_access else 'NULL'
+    query = f"UPDATE triggers SET first_access_at = {timestamp} WHERE id = {trigger_id}"
+    run_sqlite(query, db_path=TRIGGER_DB)
+
+
+def load_trigger_state(trigger_id):
+    """Load persisted state. Returns (first_access, is_triggered) tuple."""
+    query = f"SELECT first_access_at, is_triggered FROM triggers WHERE id = {trigger_id}"
+    success, output = run_sqlite(query, db_path=TRIGGER_DB)
+    if not success or not output:
+        return (None, False)
+    parts = output.split('␞')
+    first_access = datetime.fromisoformat(parts[0]) if parts[0] else None
+    is_triggered = parts[1] == '1' if len(parts) > 1 else False
+    return (first_access, is_triggered)
+
+
+def clear_trigger_state(trigger_id):
+    """Clear all persisted state for a trigger."""
+    query = f"UPDATE triggers SET first_access_at = NULL, is_triggered = 0 WHERE id = {trigger_id}"
+    run_sqlite(query, db_path=TRIGGER_DB)
+
 def reset_trigger(trigger_id, restart_daemon=True):
     """Reset a trigger: remove active block and clear timer state."""
     # First get the trigger details
@@ -599,6 +629,9 @@ def reset_trigger(trigger_id, restart_daemon=True):
 
     if block_removed:
         reload_pihole()
+
+    # Clear persisted state
+    clear_trigger_state(trigger_id)
 
     print(f"Trigger '{trigger['name']}' has been reset.")
 
@@ -902,6 +935,82 @@ def remove_all_blocks():
 
     return True
 
+
+def fresh_start():
+    """Clear all state: remove blocks and reset timer state, then restart daemon."""
+    print("Performing fresh start: clearing all state...")
+
+    # Remove all active blocks (reuse existing function but without restart)
+    removed = 0
+    trigger_ids_cleared = []
+
+    # Handle regex blocks
+    query = f"SELECT id, comment FROM domainlist WHERE comment LIKE 'Time trigger [%' AND type = {DOMAINLIST_TYPE_REGEX_DENY}"
+    success, output = run_sqlite(query)
+
+    if success and output:
+        for line in output.split('\n'):
+            if not line.strip():
+                continue
+            parts = line.split('␞')
+            if len(parts) >= 2:
+                domain_id = parts[0]
+                comment = parts[1]
+
+                match = re.search(r'Time trigger \[(\d+)\]', comment)
+                if match:
+                    trigger_ids_cleared.append(int(match.group(1)))
+
+                delete_query = f"DELETE FROM domainlist WHERE id = {domain_id}"
+                success, _ = run_sqlite(delete_query)
+                if success:
+                    print(f"Removed regex block: {comment}")
+                    removed += 1
+
+    # Handle adlist associations
+    adlist_query = "SELECT DISTINCT trigger_id, adlist_id, group_id FROM trigger_adlist_groups"
+    success, output = run_sqlite(adlist_query, db_path=TRIGGER_DB)
+
+    adlists_to_disable = set()
+    if success and output:
+        for line in output.split('\n'):
+            if not line.strip():
+                continue
+            parts = line.split('␞')
+            if len(parts) >= 3:
+                trigger_id = int(parts[0])
+                adlist_id = int(parts[1])
+                group_id = int(parts[2])
+
+                del_query = f"DELETE FROM adlist_by_group WHERE adlist_id = {adlist_id} AND group_id = {group_id}"
+                run_sqlite(del_query)
+                print(f"Removed adlist {adlist_id} from group {group_id} (trigger {trigger_id})")
+                removed += 1
+                adlists_to_disable.add(adlist_id)
+                if trigger_id not in trigger_ids_cleared:
+                    trigger_ids_cleared.append(trigger_id)
+
+        for adlist_id in adlists_to_disable:
+            disable_query = f"UPDATE adlist SET enabled = 0 WHERE id = {adlist_id}"
+            run_sqlite(disable_query)
+            print(f"Disabled adlist {adlist_id}")
+
+    # Clear all adlist tracking entries
+    run_sqlite("DELETE FROM trigger_adlist_groups", db_path=TRIGGER_DB)
+
+    # Clear all timer state from database
+    query = "UPDATE triggers SET first_access_at = NULL, is_triggered = 0"
+    run_sqlite(query, db_path=TRIGGER_DB)
+    print("Cleared all timer state from database.")
+
+    if removed > 0:
+        reload_pihole()
+        print(f"Removed {removed} block(s).")
+
+    print("All state cleared. Restarting daemon...")
+    restart_daemon_service()
+
+
 def perform_daily_reset():
     """
     Perform the daily reset: remove all blocks and reset all trigger timers.
@@ -941,14 +1050,11 @@ def perform_daily_reset():
             # Clear is_triggered in database
             set_trigger_active(trigger['id'], False)
 
-        # Reset in-memory state
+        # Reset in-memory state and clear persisted state
         state['first_access'] = None
         state['is_blocked'] = False
+        clear_trigger_state(trigger['id'])
         print(f"[Daily Reset] Timer reset for '{trigger['name']}'")
-
-    # Also clear any orphaned is_triggered flags in database
-    clear_query = "UPDATE triggers SET is_triggered = 0 WHERE is_triggered = 1"
-    run_sqlite(clear_query, db_path=TRIGGER_DB)
 
     # Clear any orphaned adlist tracking entries
     run_sqlite("DELETE FROM trigger_adlist_groups", db_path=TRIGGER_DB)
@@ -1109,6 +1215,7 @@ def handle_trigger_access(trigger, client_ip):
 
     if state['first_access'] is None:
         state['first_access'] = now
+        save_trigger_state(trigger['id'], now)
         block_time = now + timedelta(seconds=trigger['time_limit_seconds'])
         print(f"[{trigger['name']}] First access from {client_ip} at {now.strftime('%H:%M:%S')}")
         print(f"[{trigger['name']}] Will block at {block_time.strftime('%H:%M:%S')}")
@@ -1192,11 +1299,22 @@ def main():
             group_list = ','.join(str(g) for g in trigger['group_ids'])
             print(f"Warning: No clients found in group(s) {group_list} for trigger '{trigger['name']}'")
 
+        # Load persisted state from database
+        first_access, is_triggered = load_trigger_state(trigger['id'])
         trigger_states[trigger['id']] = {
-            'first_access': None,
-            'is_blocked': False,
+            'first_access': first_access,
+            'is_blocked': is_triggered,
             'target_ips': target_ips
         }
+        if first_access:
+            elapsed = (datetime.now() - first_access).total_seconds()
+            remaining = trigger['time_limit_seconds'] - elapsed
+            if remaining > 0:
+                print(f"[{trigger['name']}] Restored timer: {remaining:.0f}s remaining")
+            elif not is_triggered:
+                print(f"[{trigger['name']}] Timer expired during downtime, will block on next check")
+        if is_triggered:
+            print(f"[{trigger['name']}] Block is active (restored)")
 
     # Set up signal handlers
     signal.signal(signal.SIGINT, signal_handler)
@@ -1224,10 +1342,17 @@ def main():
     print(f"Daily reset: {reset_hour:02d}:00 local time")
     print("=" * 70)
 
-    # Clear any previous blocks on startup
-    print("\n[Setup] Clearing any previous blocks...")
+    # Restore previous state - verify blocks exist for triggered triggers
+    print("\n[Setup] Restoring previous state...")
     for trigger in triggers:
-        remove_block(trigger)
+        state = trigger_states[trigger['id']]
+        if state['is_blocked']:
+            if trigger.get('block_mode') == 'adlist':
+                # Adlist associations persist in Pi-hole
+                pass
+            elif not get_existing_block(trigger):
+                print(f"[{trigger['name']}] Re-adding missing block rule...")
+                add_block(trigger)
 
     # Initialize daily reset tracking
     global last_reset_date
@@ -1302,6 +1427,8 @@ Examples:
     cmd_group.add_argument('--remove', type=int, metavar='ID', help='Remove trigger with specified ID')
     cmd_group.add_argument('--reset', type=int, metavar='ID', help='Reset trigger (remove active block)')
     cmd_group.add_argument('--unblock', action='store_true', help='Remove all active blocks')
+    cmd_group.add_argument('--fresh-start', action='store_true',
+                           help='Clear all state (remove blocks, reset timers) and restart daemon')
 
     # Trigger field options (used with --add or --edit)
     field_group = parser.add_argument_group('trigger fields', 'Options for --add and --edit commands')
@@ -1327,7 +1454,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     # Check if any command was specified
-    is_command = args.list or getattr(args, 'list_adlists', False) or args.add or args.edit or args.remove or args.reset or args.unblock
+    is_command = args.list or getattr(args, 'list_adlists', False) or args.add or args.edit or args.remove or args.reset or args.unblock or getattr(args, 'fresh_start', False)
 
     if is_command:
         # Commands need root
@@ -1408,6 +1535,10 @@ if __name__ == "__main__":
         elif args.unblock:
             print("Removing all blocks...")
             remove_all_blocks()
+            sys.exit(0)
+
+        elif getattr(args, 'fresh_start', False):
+            fresh_start()
             sys.exit(0)
 
     else:

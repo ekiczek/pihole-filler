@@ -101,6 +101,10 @@ def init_trigger_db():
             run_sqlite("ALTER TABLE triggers ADD COLUMN block_mode TEXT DEFAULT 'regex'")
             run_sqlite("ALTER TABLE triggers ADD COLUMN adlist_id INTEGER DEFAULT NULL")
 
+        # Migration: add first_access_at column for state persistence
+        if 'first_access_at' not in schema:
+            run_sqlite("ALTER TABLE triggers ADD COLUMN first_access_at TEXT DEFAULT NULL")
+
     # Create tracking table for trigger-created adlist associations
     create_tracking = """
         CREATE TABLE IF NOT EXISTS trigger_adlist_groups (
@@ -268,6 +272,12 @@ def set_trigger_active(trigger_id, is_triggered):
     """Set the is_triggered flag for a trigger."""
     query = f"UPDATE triggers SET is_triggered = {1 if is_triggered else 0} WHERE id = {trigger_id}"
     return run_sqlite(query)
+
+
+def clear_trigger_state(trigger_id):
+    """Clear all persisted state for a trigger."""
+    query = f"UPDATE triggers SET first_access_at = NULL, is_triggered = 0 WHERE id = {trigger_id}"
+    run_sqlite(query)
 
 
 def get_pihole_groups():
@@ -566,8 +576,8 @@ def reset_trigger(trigger_id):
         )
         reload_pihole()
 
-    # Clear is_triggered flag
-    set_trigger_active(trigger_id, False)
+    # Clear persisted state (timer and is_triggered flag)
+    clear_trigger_state(trigger_id)
 
     # Restart daemon to clear in-memory state
     restart_daemon()
@@ -588,8 +598,9 @@ def reset_all_triggers():
                 trigger.get('block_mode', 'regex'),
                 trigger.get('adlist_id')
             )
-            set_trigger_active(trigger['id'], False)
             removed += 1
+        # Clear persisted state for all triggers (timer and is_triggered flag)
+        clear_trigger_state(trigger['id'])
 
     if removed > 0:
         reload_pihole()
