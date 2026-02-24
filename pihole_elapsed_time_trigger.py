@@ -768,6 +768,33 @@ def remove_block(trigger):
 
     return True
 
+def adlist_has_gravity_entries(adlist_id):
+    """Check if an adlist has domains loaded in the gravity table."""
+    query = f"SELECT COUNT(*) FROM gravity WHERE adlist_id = {adlist_id}"
+    success, output = run_sqlite(query)
+    if success and output:
+        try:
+            return int(output.strip()) > 0
+        except ValueError:
+            pass
+    return False
+
+def update_gravity():
+    """Run pihole -g to download adlist domains into the gravity table."""
+    print("[Pi-hole] Updating gravity (downloading adlist domains)...")
+    result = subprocess.run(
+        ["sudo", "pihole", "-g"],
+        capture_output=True,
+        text=True,
+        timeout=300
+    )
+    if result.returncode == 0:
+        print("[Pi-hole] Gravity update successful")
+        return True
+    else:
+        print(f"[Pi-hole] Gravity update may have failed: {result.stderr}")
+        return False
+
 def add_adlist_to_groups(trigger):
     """Associate adlist with trigger's groups when time expires."""
     adlist_id = trigger['adlist_id']
@@ -791,6 +818,13 @@ def add_adlist_to_groups(trigger):
 
     group_list = ','.join(str(g) for g in trigger['group_ids'])
     print(f"[{trigger['name']}] Adlist {adlist_id} associated with group(s) {group_list}")
+
+    # If the adlist has no domains in the gravity table, run a gravity update
+    # to download them. Without this, the adlist is enabled but has nothing to block.
+    if not adlist_has_gravity_entries(adlist_id):
+        print(f"[{trigger['name']}] Adlist {adlist_id} has no domains in gravity, running gravity update...")
+        update_gravity()
+
     set_trigger_active(trigger['id'], True)
     return True
 
