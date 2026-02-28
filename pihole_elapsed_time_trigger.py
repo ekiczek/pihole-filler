@@ -1222,6 +1222,14 @@ def tail_log(filepath):
                             yield ""
 
                         try:
+                            # Detect copytruncate: file was truncated but inode unchanged
+                            current_pos = f.tell()
+                            current_size = os.fstat(f.fileno()).st_size
+                            if current_size < current_pos:
+                                print(f"[Monitor] Log file truncated (copytruncate detected), re-seeking...")
+                                f.seek(0, 2)
+                                continue
+
                             if os.stat(filepath).st_ino != os.fstat(f.fileno()).st_ino:
                                 print("[Monitor] Log file rotated, reopening...")
                                 break
