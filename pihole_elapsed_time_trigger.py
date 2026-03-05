@@ -406,7 +406,7 @@ def remove_trigger(trigger_id):
                 remove_block(trigger)
                 reload_pihole()
         else:
-            block_id = get_existing_block(trigger)
+            block_id = get_existing_block_by_regex(trigger['block_regex'])
             if block_id:
                 print(f"Removing active block rule (ID: {block_id})...")
                 remove_block(trigger)
@@ -467,7 +467,7 @@ def edit_trigger(trigger_id, name=None, group_ids=None, time_limit=None,
         if current['block_mode'] == 'adlist':
             remove_adlist_from_groups(trigger_for_block)
         else:
-            block_id = get_existing_block(trigger_for_block)
+            block_id = get_existing_block_by_regex(trigger_for_block['block_regex'])
             if block_id:
                 remove_block(trigger_for_block)
         reload_pihole()
@@ -616,7 +616,7 @@ def reset_trigger(trigger_id, restart_daemon=True):
             print(f"  No active block found")
     else:
         # Regex mode - check if there's an active block rule in Pi-hole
-        domain_id = get_existing_block(trigger)
+        domain_id = get_existing_block_by_regex(trigger['block_regex'])
         if domain_id:
             print(f"  Removing block rule (ID: {domain_id})...")
             remove_block(trigger)
@@ -660,7 +660,7 @@ def get_block_comment(trigger):
     return f"Time trigger [{trigger['id']}] - {trigger['name']}"
 
 def get_existing_block(trigger):
-    """Check if the block rule for a trigger already exists."""
+    """Check if the block rule for a trigger already exists (by comment)."""
     comment = get_block_comment(trigger)
     query = f"SELECT id FROM domainlist WHERE comment = '{comment}' AND type = {DOMAINLIST_TYPE_REGEX_DENY}"
     success, output = run_sqlite(query)
@@ -668,6 +668,34 @@ def get_existing_block(trigger):
     if success and output:
         return int(output.split('\n')[0])
     return None
+
+def get_existing_block_by_regex(block_regex):
+    """Find a domainlist entry by regex pattern, regardless of which trigger created it."""
+    escaped = block_regex.replace("'", "''")
+    query = f"SELECT id FROM domainlist WHERE domain = '{escaped}' AND type = {DOMAINLIST_TYPE_REGEX_DENY}"
+    success, output = run_sqlite(query)
+    if success and output:
+        return int(output.split('\n')[0])
+    return None
+
+def get_other_active_triggers_with_same_regex(trigger):
+    """Find other active triggers that use the same block_regex."""
+    escaped = trigger['block_regex'].replace("'", "''")
+    query = f"SELECT id, group_ids FROM triggers WHERE block_regex = '{escaped}' AND id != {trigger['id']} AND is_triggered = 1 AND enabled = 1"
+    success, output = run_sqlite(query, db_path=TRIGGER_DB)
+    if not success or not output:
+        return []
+    results = []
+    for line in output.split('\n'):
+        if not line.strip():
+            continue
+        parts = line.split('␞')
+        if len(parts) >= 2:
+            results.append({
+                'id': int(parts[0]),
+                'group_ids': [int(g.strip()) for g in parts[1].split(',')]
+            })
+    return results
 
 def add_block(trigger):
     """Add blocking rule to the database for a trigger's groups."""
@@ -678,11 +706,23 @@ def add_block(trigger):
     comment = get_block_comment(trigger)
     print(f"[{trigger['name']}] Adding block rule...")
 
-    # Check if it already exists
-    existing_id = get_existing_block(trigger)
+    # Check if a rule with this regex already exists (from this or another trigger)
+    existing_id = get_existing_block_by_regex(trigger['block_regex'])
     if existing_id:
-        print(f"[{trigger['name']}] Rule already exists (ID: {existing_id}), enabling it...")
-        return enable_block(trigger, existing_id)
+        print(f"[{trigger['name']}] Rule already exists (ID: {existing_id}), ensuring enabled and groups assigned...")
+        # Enable the rule in case it was disabled
+        enable_query = f"UPDATE domainlist SET enabled = 1 WHERE id = {existing_id}"
+        run_sqlite(enable_query)
+        # Add this trigger's groups to the existing rule
+        for group_id in trigger['group_ids']:
+            add_to_group = f"INSERT OR IGNORE INTO domainlist_by_group (domainlist_id, group_id) VALUES ({existing_id}, {group_id})"
+            success, output = run_sqlite(add_to_group)
+            if not success:
+                print(f"[{trigger['name']}] Warning: Failed to assign to group {group_id}: {output}")
+        group_list = ','.join(str(g) for g in trigger['group_ids'])
+        print(f"[{trigger['name']}] Assigned rule to group(s) {group_list}")
+        set_trigger_active(trigger['id'], True)
+        return True
 
     # Escape single quotes in regex
     block_regex = trigger['block_regex'].replace("'", "''")
@@ -695,14 +735,16 @@ def add_block(trigger):
 
     success, output = run_sqlite(insert_query)
 
-    # Verify the insert
+    # Verify the insert - check by comment first, then by regex (race condition fallback)
     domain_id = get_existing_block(trigger)
+    if not domain_id:
+        domain_id = get_existing_block_by_regex(trigger['block_regex'])
     if not domain_id:
         print(f"[{trigger['name']}] Failed to insert rule: {output}")
         return False
 
     if not success:
-        print(f"[{trigger['name']}] Note: INSERT reported error but succeeded (ID: {domain_id})")
+        print(f"[{trigger['name']}] Note: INSERT reported error but rule exists (ID: {domain_id})")
     else:
         print(f"[{trigger['name']}] Inserted rule (ID: {domain_id})")
 
@@ -725,43 +767,61 @@ def add_block(trigger):
 
     return True
 
-def enable_block(trigger, domain_id):
-    """Enable an existing block rule."""
-    query = f"UPDATE domainlist SET enabled = 1 WHERE id = {domain_id}"
-    success, output = run_sqlite(query)
-
-    if success:
-        print(f"[{trigger['name']}] Enabled rule (ID: {domain_id})")
-        return True
-    else:
-        print(f"[{trigger['name']}] Failed to enable rule: {output}")
-        return False
-
 def remove_block(trigger):
-    """Remove the blocking rule for a trigger."""
+    """Remove the blocking rule for a trigger.
+
+    If other active triggers share the same block_regex, only this trigger's
+    exclusive groups are removed from the rule (groups not needed by any other
+    active trigger). The rule itself is only deleted when no other trigger
+    shares the regex.
+    """
     # Check if this trigger uses adlist mode
     if trigger.get('block_mode') == 'adlist':
         return remove_adlist_from_groups(trigger)
 
-    domain_id = get_existing_block(trigger)
+    # Look up the rule by regex pattern (works regardless of which trigger created it)
+    domain_id = get_existing_block_by_regex(trigger['block_regex'])
 
     if not domain_id:
         # No block exists, but ensure is_triggered is false
         set_trigger_active(trigger['id'], False)
         return False
 
-    print(f"[{trigger['name']}] Removing rule (ID: {domain_id})...")
+    print(f"[{trigger['name']}] Removing block (ID: {domain_id})...")
 
-    query = f"DELETE FROM domainlist WHERE id = {domain_id}"
-    success, output = run_sqlite(query)
+    # Check if other active triggers share this regex
+    other_triggers = get_other_active_triggers_with_same_regex(trigger)
 
-    # Verify the delete
-    still_exists = get_existing_block(trigger)
-    if still_exists:
-        print(f"[{trigger['name']}] Failed to remove rule: {output}")
-        return False
+    if other_triggers:
+        # Other triggers share this regex - only remove groups exclusive to this trigger
+        other_group_ids = set()
+        for t in other_triggers:
+            other_group_ids.update(t['group_ids'])
 
-    print(f"[{trigger['name']}] Rule removed")
+        groups_to_remove = [g for g in trigger['group_ids'] if g not in other_group_ids]
+
+        if groups_to_remove:
+            for group_id in groups_to_remove:
+                del_query = f"DELETE FROM domainlist_by_group WHERE domainlist_id = {domain_id} AND group_id = {group_id}"
+                run_sqlite(del_query)
+            removed_list = ','.join(str(g) for g in groups_to_remove)
+            other_ids = ','.join(str(t['id']) for t in other_triggers)
+            print(f"[{trigger['name']}] Removed exclusive group(s) {removed_list} from shared rule (also used by trigger(s) {other_ids})")
+        else:
+            other_ids = ','.join(str(t['id']) for t in other_triggers)
+            print(f"[{trigger['name']}] All groups shared with other active trigger(s) {other_ids}, rule unchanged")
+    else:
+        # No other triggers share this regex - delete the rule entirely
+        query = f"DELETE FROM domainlist WHERE id = {domain_id}"
+        success, output = run_sqlite(query)
+
+        # Verify the delete
+        still_exists = get_existing_block_by_regex(trigger['block_regex'])
+        if still_exists:
+            print(f"[{trigger['name']}] Failed to remove rule: {output}")
+            return False
+
+        print(f"[{trigger['name']}] Rule removed")
 
     # Mark trigger as inactive in database
     set_trigger_active(trigger['id'], False)
@@ -1067,22 +1127,9 @@ def perform_daily_reset():
 
         # Check if this trigger has an active block
         if state['is_blocked']:
-            if trigger.get('block_mode') == 'adlist':
-                # Remove adlist associations
-                print(f"[Daily Reset] Removing adlist associations for '{trigger['name']}'")
-                remove_adlist_from_groups(trigger)
+            print(f"[Daily Reset] Removing block for '{trigger['name']}'")
+            if remove_block(trigger):
                 blocks_removed += 1
-            else:
-                # Remove regex block
-                domain_id = get_existing_block(trigger)
-                if domain_id:
-                    print(f"[Daily Reset] Removing block for '{trigger['name']}'")
-                    query = f"DELETE FROM domainlist WHERE id = {domain_id}"
-                    run_sqlite(query)
-                    blocks_removed += 1
-
-            # Clear is_triggered in database
-            set_trigger_active(trigger['id'], False)
 
         # Reset in-memory state and clear persisted state
         state['first_access'] = None
@@ -1392,7 +1439,7 @@ def main():
             if trigger.get('block_mode') == 'adlist':
                 # Adlist associations persist in Pi-hole
                 pass
-            elif not get_existing_block(trigger):
+            elif not get_existing_block_by_regex(trigger['block_regex']):
                 print(f"[{trigger['name']}] Re-adding missing block rule...")
                 add_block(trigger)
 

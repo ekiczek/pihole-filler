@@ -495,14 +495,34 @@ def reload_pihole():
 
 
 def get_existing_block(trigger_id, block_regex):
-    """Check if the block rule for a trigger already exists in Pi-hole."""
-    comment = f"Time trigger [{trigger_id}]"
-    query = f"SELECT id FROM domainlist WHERE comment LIKE '{comment}%' AND type = 3"
+    """Check if a block rule exists for this regex pattern in Pi-hole."""
+    escaped = block_regex.replace("'", "''")
+    query = f"SELECT id FROM domainlist WHERE domain = '{escaped}' AND type = 3"
     success, output = run_sqlite(query, db_path=GRAVITY_DB)
 
     if success and output:
         return int(output.split('\n')[0])
     return None
+
+
+def get_other_active_triggers_with_same_regex(trigger_id, block_regex):
+    """Find other active triggers that use the same block_regex."""
+    escaped = block_regex.replace("'", "''")
+    query = f"SELECT id, group_ids FROM triggers WHERE block_regex = '{escaped}' AND id != {trigger_id} AND is_triggered = 1 AND enabled = 1"
+    success, output = run_sqlite(query)
+    if not success or not output:
+        return []
+    results = []
+    for line in output.split('\n'):
+        if not line.strip():
+            continue
+        parts = line.split('␞')
+        if len(parts) >= 2:
+            results.append({
+                'id': int(parts[0]),
+                'group_ids': [int(g.strip()) for g in parts[1].split(',')]
+            })
+    return results
 
 
 def get_trigger_adlist_associations(trigger_id):
@@ -544,20 +564,43 @@ def remove_adlist_associations(trigger_id, adlist_id):
     return True
 
 
-def remove_block_rule(trigger_id, block_regex, block_mode='regex', adlist_id=None):
-    """Remove the blocking rule for a trigger from Pi-hole."""
+def remove_block_rule(trigger_id, block_regex, block_mode='regex', adlist_id=None, group_ids=None):
+    """Remove the blocking rule for a trigger from Pi-hole.
+
+    If other active triggers share the same block_regex, only this trigger's
+    exclusive groups are removed. The rule is only deleted when no other
+    trigger shares the regex.
+    """
     if block_mode == 'adlist' and adlist_id:
         return remove_adlist_associations(trigger_id, adlist_id)
 
-    # Regex mode
+    # Regex mode - look up by regex pattern
     domain_id = get_existing_block(trigger_id, block_regex)
 
     if not domain_id:
         return False
 
-    query = f"DELETE FROM domainlist WHERE id = {domain_id}"
-    success, _ = run_sqlite(query, db_path=GRAVITY_DB)
-    return success
+    # Check if other active triggers share this regex
+    other_triggers = get_other_active_triggers_with_same_regex(trigger_id, block_regex)
+
+    if other_triggers and group_ids:
+        # Other triggers share this regex - only remove exclusive groups
+        other_group_ids = set()
+        for t in other_triggers:
+            other_group_ids.update(t['group_ids'])
+
+        my_group_ids = [int(g.strip()) for g in group_ids.split(',')]
+        groups_to_remove = [g for g in my_group_ids if g not in other_group_ids]
+
+        for group_id in groups_to_remove:
+            del_query = f"DELETE FROM domainlist_by_group WHERE domainlist_id = {domain_id} AND group_id = {group_id}"
+            run_sqlite(del_query, db_path=GRAVITY_DB)
+        return True
+    else:
+        # No other triggers share this regex - delete the rule entirely
+        query = f"DELETE FROM domainlist WHERE id = {domain_id}"
+        success, _ = run_sqlite(query, db_path=GRAVITY_DB)
+        return success
 
 
 def reset_trigger(trigger_id):
@@ -572,7 +615,8 @@ def reset_trigger(trigger_id):
             trigger_id,
             trigger['block_regex'],
             trigger.get('block_mode', 'regex'),
-            trigger.get('adlist_id')
+            trigger.get('adlist_id'),
+            trigger.get('group_ids')
         )
         reload_pihole()
 
@@ -596,7 +640,8 @@ def reset_all_triggers():
                 trigger['id'],
                 trigger['block_regex'],
                 trigger.get('block_mode', 'regex'),
-                trigger.get('adlist_id')
+                trigger.get('adlist_id'),
+                trigger.get('group_ids')
             )
             removed += 1
         # Clear persisted state for all triggers (timer and is_triggered flag)
@@ -877,7 +922,8 @@ def edit(trigger_id):
                 trigger_id,
                 trigger['block_regex'],
                 trigger.get('block_mode', 'regex'),
-                trigger.get('adlist_id')
+                trigger.get('adlist_id'),
+                trigger.get('group_ids')
             )
             reload_pihole()
 
@@ -934,7 +980,8 @@ def delete(trigger_id):
             trigger_id,
             trigger['block_regex'],
             trigger.get('block_mode', 'regex'),
-            trigger.get('adlist_id')
+            trigger.get('adlist_id'),
+            trigger.get('group_ids')
         )
         reload_pihole()
 
@@ -969,7 +1016,8 @@ def toggle(trigger_id):
             trigger_id,
             trigger['block_regex'],
             trigger.get('block_mode', 'regex'),
-            trigger.get('adlist_id')
+            trigger.get('adlist_id'),
+            trigger.get('group_ids')
         )
         reload_pihole()
 
